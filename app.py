@@ -1,0 +1,252 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+from datetime import datetime
+
+from analysis.sector_flow import (
+    get_sector_flow, top_inflow_sectors, top_outflow_sectors,
+    classify_flow_strength, get_multi_sector_hist,
+    compute_cumulative_inflow, rolling_inflow_strength,
+)
+from analysis.market_sentiment import get_sentiment_summary, get_northbound
+from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST
+from ui.charts import (
+    sector_heatmap, bar_inflow, sentiment_gauge, northbound_bar,
+    sector_hist_line, sector_cumulative_line, sector_heatmap_calendar,
+    stock_kline, watchlist_summary_cards,
+)
+
+st.set_page_config(
+    page_title="A股资金流向分析",
+    page_icon="📊",
+    layout="wide",
+)
+
+st.title("📊 A股资金流向分析")
+st.caption(f"数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}  |  数据来源：东方财富 / akshare")
+
+# ── 侧边栏控制 ────────────────────────────────────────────────
+with st.sidebar:
+    st.header("设置")
+    sector_type = st.radio("板块类型", ["行业板块", "概念板块"])
+    top_n = st.slider("显示板块数量", 10, 50, 20)
+    st.divider()
+    if st.button("🔄 刷新数据", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+use_concept = sector_type == "概念板块"
+
+# ── 缓存数据加载 ──────────────────────────────────────────────
+@st.cache_data(ttl=1800)
+def load_sector(concept: bool):
+    return get_sector_flow(use_concept=concept)
+
+@st.cache_data(ttl=1800)
+def load_sentiment():
+    return get_sentiment_summary()
+
+@st.cache_data(ttl=1800)
+def load_northbound():
+    try:
+        return get_northbound()
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600 * 6, show_spinner="正在拉取历史数据（首次较慢）...")
+def load_hist(sector_names: tuple):
+    return get_multi_sector_hist(list(sector_names))
+
+with st.spinner("正在获取今日市场数据..."):
+    try:
+        df_sector = load_sector(use_concept)
+        sentiment = load_sentiment()
+        df_north = load_northbound()
+        data_ok = True
+    except Exception as e:
+        st.error(f"数据获取失败：{e}")
+        data_ok = False
+
+if not data_ok:
+    st.stop()
+
+df_labeled = classify_flow_strength(df_sector)
+
+# ── 顶部指标卡 ────────────────────────────────────────────────
+col1, col2, col3, col4 = st.columns(4)
+inflow_sectors = (df_labeled["main_net_inflow"] > 0).sum()
+total_inflow = df_labeled["main_net_inflow"].sum() / 1e8
+
+col1.metric("情绪等级", sentiment["sentiment_label"])
+col2.metric("涨停板数量", sentiment["limit_up"])
+col3.metric("净流入板块数", f"{inflow_sectors} / {len(df_labeled)}")
+col4.metric("全市场主力合计", f"{total_inflow:.1f} 亿")
+
+st.divider()
+
+# ── 主 Tab ────────────────────────────────────────────────────
+tab_today, tab_hist, tab_watch = st.tabs(["今日资金流向", "历史趋势对比", "自选股"])
+
+# ════════════════════════════════════════════════════════════
+# Tab 1：今日资金流向
+# ════════════════════════════════════════════════════════════
+with tab_today:
+    st.subheader("板块资金热力图")
+    fig_heat = sector_heatmap(df_labeled.head(top_n), title=f"{sector_type}资金流向热力图")
+    st.plotly_chart(fig_heat, use_container_width=True)
+
+    col_in, col_out = st.columns(2)
+    with col_in:
+        fig_in = bar_inflow(top_inflow_sectors(df_labeled, 10), n=10, title="主力净流入 TOP 10")
+        st.plotly_chart(fig_in, use_container_width=True)
+    with col_out:
+        fig_out = bar_inflow(top_outflow_sectors(df_labeled, 10), n=10, title="主力净流出 TOP 10")
+        st.plotly_chart(fig_out, use_container_width=True)
+
+    st.divider()
+    col_sent, col_north = st.columns([1, 2])
+    with col_sent:
+        st.subheader("市场情绪仪表盘")
+        fig_gauge = sentiment_gauge(sentiment["sentiment_level"], sentiment["sentiment_label"])
+        st.plotly_chart(fig_gauge, use_container_width=True)
+        st.caption(f"涨停 {sentiment['limit_up']} | 跌停 {sentiment['limit_down']} | 比值 {sentiment['ratio']}")
+    with col_north:
+        st.subheader("北向资金")
+        fig_north = northbound_bar(df_north)
+        st.plotly_chart(fig_north, use_container_width=True)
+
+    with st.expander("查看原始数据"):
+        show_df = df_labeled[["sector", "pct_change", "main_net_inflow", "main_net_inflow_pct", "flow_label"]].copy()
+        show_df["main_net_inflow"] = (show_df["main_net_inflow"] / 1e8).round(2)
+        show_df.columns = ["板块", "涨跌幅%", "主力净流入(亿)", "净占比%", "强度标签"]
+        st.dataframe(show_df, use_container_width=True, height=400)
+
+# ════════════════════════════════════════════════════════════
+# Tab 2：历史趋势对比
+# ════════════════════════════════════════════════════════════
+with tab_hist:
+    st.subheader("选择要对比的板块")
+
+    # 默认取今日净流入 Top 5 作为预选
+    default_sectors = top_inflow_sectors(df_labeled, 5)["sector"].tolist()
+    all_sectors = df_labeled["sector"].tolist()
+
+    selected = st.multiselect(
+        "选择板块（最多10个）",
+        options=all_sectors,
+        default=default_sectors[:5],
+        max_selections=10,
+    )
+
+    col_metric, col_window = st.columns([2, 1])
+    with col_metric:
+        view_mode = st.radio(
+            "视图模式",
+            ["每日净流入", "累计净流入", "滚动均值"],
+            horizontal=True,
+        )
+    with col_window:
+        roll_window = st.slider("滚动窗口（交易日）", 3, 20, 5, disabled=(view_mode != "滚动均值"))
+
+    if not selected:
+        st.info("请至少选择一个板块")
+    else:
+        df_hist = load_hist(tuple(selected))
+
+        if df_hist.empty:
+            st.error("历史数据获取失败，请稍后重试")
+        else:
+            df_hist["main_net_inflow_億"] = df_hist["main_net_inflow"] / 1e8
+
+            if view_mode == "累计净流入":
+                df_plot = compute_cumulative_inflow(df_hist)
+                fig = sector_cumulative_line(df_plot, title="板块累计主力净流入对比")
+            elif view_mode == "滚动均值":
+                df_plot = df_hist.copy()
+                df_plot["main_net_inflow_億"] = df_plot["main_net_inflow"] / 1e8
+                df_plot = rolling_inflow_strength(df_plot, window=roll_window)
+                # 复用折线图，把 rolling_mean_億 映射到 main_net_inflow_億 列
+                df_plot["main_net_inflow_億"] = df_plot["rolling_mean_億"]
+                fig = sector_hist_line(
+                    df_plot,
+                    metric="main_net_inflow_億",
+                    title=f"板块 {roll_window} 日滚动主力净流入均值",
+                )
+            else:
+                fig = sector_hist_line(df_hist, title="板块每日主力净流入对比")
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            # 日历热力图：单板块下钻
+            st.divider()
+            st.subheader("单板块日历热力图")
+            cal_sector = st.selectbox("选择板块", selected)
+            fig_cal = sector_heatmap_calendar(df_hist, cal_sector)
+            st.plotly_chart(fig_cal, use_container_width=True)
+
+            # 数据统计摘要
+            with st.expander("历史数据摘要"):
+                summary = (
+                    df_hist.groupby("sector")["main_net_inflow_億"]
+                    .agg(["mean", "sum", "std", "min", "max"])
+                    .round(2)
+                    .rename(columns={"mean": "日均(亿)", "sum": "累计(亿)", "std": "波动", "min": "最小", "max": "最大"})
+                )
+                st.dataframe(summary, use_container_width=True)
+
+# ════════════════════════════════════════════════════════════
+# Tab 3：自选股
+# ════════════════════════════════════════════════════════════
+with tab_watch:
+    @st.cache_data(ttl=3600, show_spinner="正在拉取自选股历史数据...")
+    def load_watchlist():
+        return get_all_watchlist_hist(start="20250101")
+
+    df_watch = load_watchlist()
+
+    if df_watch.empty:
+        st.error("自选股数据获取失败")
+    else:
+        # 指标卡一行展示
+        stats = compute_stock_stats(df_watch)
+        watchlist_summary_cards(stats)
+
+        st.divider()
+
+        # K线图：选股切换
+        name_list = list(WATCHLIST.keys())
+        selected_stock = st.radio("选择股票", name_list, horizontal=True)
+        code = WATCHLIST[selected_stock]
+        df_one = df_watch[df_watch["code"] == code]
+        fig_k = stock_kline(df_one, selected_stock)
+        st.plotly_chart(fig_k, use_container_width=True)
+
+        st.divider()
+
+        # 四股收盘价归一化对比（基准=1）
+        st.subheader("相对表现对比（以首日收盘价归一）")
+        fig_norm = go.Figure()
+        for name, grp in df_watch.groupby("name"):
+            grp = grp.sort_values("date")
+            base = grp["close"].iloc[0]
+            fig_norm.add_trace(go.Scatter(
+                x=grp["date"], y=(grp["close"] / base),
+                mode="lines", name=name,
+                hovertemplate=f"<b>{name}</b><br>%{{x|%Y-%m-%d}}<br>相对收益: %{{y:.3f}}<extra></extra>",
+            ))
+        fig_norm.add_hline(y=1, line_dash="dash", line_color="gray", line_width=1)
+        fig_norm.update_layout(
+            height=380, xaxis_title="日期", yaxis_title="归一化价格",
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(t=60, b=40),
+        )
+        st.plotly_chart(fig_norm, use_container_width=True)
+
+        # 明细数据
+        with st.expander("统计摘要"):
+            st.dataframe(stats.set_index("name"), use_container_width=True)
