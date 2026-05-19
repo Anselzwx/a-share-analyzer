@@ -367,7 +367,7 @@ with tab_power:
                 except Exception:
                     return ""
 
-            styled = show_power.style.applymap(color_pct, subset=["涨跌幅%"])
+            styled = show_power.style.map(color_pct, subset=["涨跌幅%"])
             st.dataframe(styled, use_container_width=True, height=600)
 
         with col_picks:
