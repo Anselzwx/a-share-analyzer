@@ -14,6 +14,7 @@ from analysis.sector_flow import (
 )
 from analysis.market_sentiment import get_sentiment_summary, get_northbound
 from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST
+from analysis.hot_picks import pick_top3
 from ui.charts import (
     sector_heatmap, bar_inflow, sentiment_gauge, northbound_bar,
     sector_hist_line, sector_cumulative_line, sector_heatmap_calendar,
@@ -89,7 +90,7 @@ col4.metric("全市场主力合计", f"{total_inflow:.1f} 亿")
 st.divider()
 
 # ── 主 Tab ────────────────────────────────────────────────────
-tab_today, tab_hist, tab_watch = st.tabs(["今日资金流向", "历史趋势对比", "自选股"])
+tab_today, tab_hist, tab_watch, tab_picks = st.tabs(["今日资金流向", "历史趋势对比", "自选股", "🔥 热门精选"])
 
 # ════════════════════════════════════════════════════════════
 # Tab 1：今日资金流向
@@ -250,3 +251,66 @@ with tab_watch:
         # 明细数据
         with st.expander("统计摘要"):
             st.dataframe(stats.set_index("name"), use_container_width=True)
+
+# ════════════════════════════════════════════════════════════
+# Tab 4：热门精选
+# ════════════════════════════════════════════════════════════
+with tab_picks:
+    st.subheader("🔥 东方财富热门上涨榜精选")
+    st.caption(
+        "从东方财富热门上涨榜（100只）中，综合热度动量、涨幅适中性、"
+        "MA多头、RSI、价格区间、量比六个维度打分，自动选出得分最高的 3 只。"
+        "每30分钟刷新一次，仅供参考，不构成投资建议。"
+    )
+
+    @st.cache_data(ttl=1800, show_spinner="正在分析热门上涨榜，计算技术指标（约30-60秒）...")
+    def load_hot_picks():
+        return pick_top3(max_candidates=30)
+
+    if st.button("🔄 重新分析", key="refresh_picks"):
+        st.cache_data.clear()
+        st.rerun()
+
+    with st.spinner("正在从东方财富获取热门榜并计算技术指标..."):
+        try:
+            df_picks = load_hot_picks()
+            picks_ok = not df_picks.empty
+        except Exception as e:
+            st.error(f"分析失败：{e}")
+            picks_ok = False
+
+    if picks_ok:
+        # 展示 Top3 卡片
+        cols = st.columns(3)
+        medals = ["🥇", "🥈", "🥉"]
+        for i, (col, (_, row)) in enumerate(zip(cols, df_picks.iterrows())):
+            with col:
+                st.markdown(f"### {medals[i]} {row['name']}（{row['code']}）")
+                st.metric("最新价", f"¥{row['最新价']:.2f}", f"+{row['涨跌幅%']:.2f}%")
+                st.markdown(f"""
+| 指标 | 数值 |
+|------|------|
+| 综合得分 | **{row['综合得分']}** / 100 |
+| 热度排名上升 | {int(row['热度排名上升'])} 位 |
+| MA5 / MA20 | {row['MA5']} / {row['MA20']} |
+| RSI(14) | {row['RSI14']} |
+| 60日区间位 | {row['60日区间位%']}% |
+| 量比 | {row['量比']}x |
+""")
+                st.success(f"**亮点**：{row['理由']}")
+
+        st.divider()
+
+        # 评分明细表
+        with st.expander("查看完整评分明细"):
+            show = df_picks[["name", "code", "最新价", "涨跌幅%", "热度排名上升",
+                              "MA5", "MA20", "RSI14", "60日区间位%", "量比", "综合得分", "理由"]].copy()
+            show.index = [f"#{i+1}" for i in range(len(show))]
+            st.dataframe(show, use_container_width=True)
+
+        st.info(
+            "⚠️ 选股仅基于当日技术面，未考虑基本面、消息面及行业趋势。"
+            "建议结合「今日资金流向」验证所在板块强弱后再决策。"
+        )
+    else:
+        st.warning("暂无数据，请稍后重试或点击「重新分析」")
