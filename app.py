@@ -15,6 +15,7 @@ from analysis.sector_flow import (
 from analysis.market_sentiment import get_sentiment_summary, get_northbound
 from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST
 from analysis.hot_picks import pick_top3
+from analysis.power_sector import get_power_top50, pick_power_top5
 from ui.charts import (
     sector_heatmap, bar_inflow, sentiment_gauge, northbound_bar,
     sector_hist_line, sector_cumulative_line, sector_heatmap_calendar,
@@ -90,7 +91,9 @@ col4.metric("全市场主力合计", f"{total_inflow:.1f} 亿")
 st.divider()
 
 # ── 主 Tab ────────────────────────────────────────────────────
-tab_today, tab_hist, tab_watch, tab_picks = st.tabs(["今日资金流向", "历史趋势对比", "自选股", "🔥 热门精选"])
+tab_today, tab_hist, tab_watch, tab_picks, tab_power = st.tabs(
+    ["今日资金流向", "历史趋势对比", "自选股", "🔥 热门精选", "⚡ 电力板块"]
+)
 
 # ════════════════════════════════════════════════════════════
 # Tab 1：今日资金流向
@@ -314,3 +317,97 @@ with tab_picks:
         )
     else:
         st.warning("暂无数据，请稍后重试或点击「重新分析」")
+
+# ════════════════════════════════════════════════════════════
+# Tab 5：电力板块
+# ════════════════════════════════════════════════════════════
+with tab_power:
+    st.subheader("⚡ 电力板块 Top50 行情")
+    st.caption("数据来源：同花顺行业板块（电力 881145）｜每30分钟刷新")
+
+    @st.cache_data(ttl=1800, show_spinner="正在获取电力板块成分股数据...")
+    def load_power_top50():
+        return get_power_top50()
+
+    @st.cache_data(ttl=1800, show_spinner="正在分析电力板块，计算技术指标（约60秒）...")
+    def load_power_picks(top50_hash: int):
+        return pick_power_top5()
+
+    if st.button("🔄 重新分析", key="refresh_power"):
+        st.cache_data.clear()
+        st.rerun()
+
+    with st.spinner("正在获取电力板块数据..."):
+        try:
+            df_power = load_power_top50()
+            power_ok = not df_power.empty
+        except Exception as e:
+            st.error(f"电力板块数据获取失败：{e}")
+            power_ok = False
+
+    if power_ok:
+        # ── 左右双栏布局 ──────────────────────────────────────
+        col_list, col_picks = st.columns([3, 2], gap="large")
+
+        with col_list:
+            st.markdown("#### 近期涨幅 Top50")
+
+            # 展示表格（精简列）
+            display_cols = ["rank", "名称", "code", "现价", "涨跌幅(%)", "换手(%)", "量比", "市盈率", "流通市值_亿"]
+            show_power = df_power[display_cols].copy()
+            show_power.columns = ["排名", "名称", "代码", "最新价", "涨跌幅%", "换手率%", "量比", "市盈率", "流通市值(亿)"]
+            show_power = show_power.reset_index(drop=True)
+
+            # 涨跌幅颜色渲染
+            def color_pct(val):
+                try:
+                    v = float(val)
+                    color = "#d62728" if v > 0 else "#2ca02c"
+                    return f"color: {color}; font-weight: bold"
+                except Exception:
+                    return ""
+
+            styled = show_power.style.applymap(color_pct, subset=["涨跌幅%"])
+            st.dataframe(styled, use_container_width=True, height=600)
+
+        with col_picks:
+            st.markdown("#### 精选5只：最值得买入")
+            st.caption("综合今日动量、均线趋势、RSI、量比、估值、价格区间六维打分")
+
+            with st.spinner("计算技术指标中..."):
+                try:
+                    df_p5 = load_power_picks(len(df_power))
+                    picks5_ok = not df_p5.empty
+                except Exception as e:
+                    st.error(f"精选分析失败：{e}")
+                    picks5_ok = False
+
+            if picks5_ok:
+                rank_icons = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+                for i, (_, row) in enumerate(df_p5.iterrows()):
+                    with st.container():
+                        pct_str = f"+{row['今日涨跌幅%']:.2f}%" if row['今日涨跌幅%'] >= 0 else f"{row['今日涨跌幅%']:.2f}%"
+                        st.markdown(f"**{rank_icons[i]} {row['name']}** `{row['code']}`")
+                        m1, m2 = st.columns(2)
+                        m1.metric("最新价", f"¥{row['最新价']:.2f}", pct_str)
+                        m2.metric("综合得分", f"{row['综合得分']} / 100")
+                        st.markdown(f"""
+<small>
+MA5={row['MA5']} MA20={row['MA20']} ｜ RSI={row['RSI14']} ｜ 区间位{row['60日区间位%']}% ｜ PE={row['市盈率'] if pd.notna(row['市盈率']) else '--'}
+</small>
+""", unsafe_allow_html=True)
+                        st.success(f"{row['买入理由']}")
+                        st.divider()
+
+                with st.expander("查看5只评分明细"):
+                    p5_show = df_p5[["name", "code", "最新价", "今日涨跌幅%", "RSI14",
+                                     "60日区间位%", "5日涨幅%", "市盈率", "综合得分", "买入理由"]].copy()
+                    p5_show.index = [f"#{i+1}" for i in range(len(p5_show))]
+                    st.dataframe(p5_show, use_container_width=True)
+            else:
+                st.warning("精选分析暂无结果，请稍后重试")
+
+        st.info(
+            "⚠️ 电力板块今日整体表现强势时，注意追高风险。"
+            "精选基于技术面打分，建议结合板块资金流向与个股基本面综合判断。"
+        )
