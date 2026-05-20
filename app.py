@@ -259,14 +259,13 @@ with tab_watch:
 # Tab 4：热门精选
 # ════════════════════════════════════════════════════════════
 with tab_picks:
-    st.subheader("🔥 东方财富热门上涨榜精选")
+    st.subheader("🔥 今日涨停预测")
     st.caption(
-        "从东方财富热门上涨榜（100只）中，综合热度动量、涨幅适中性、"
-        "MA多头、RSI、价格区间、量比六个维度打分，自动选出得分最高的 3 只。"
-        "每30分钟刷新一次，仅供参考，不构成投资建议。"
+        "从东方财富热门上涨榜中，**排除已涨停股**，专注寻找当前涨幅3-9%、"
+        "量比爆发、热度急升、均线多头的「蓄势待涨停」标的。每15分钟刷新。"
     )
 
-    @st.cache_data(ttl=1800, show_spinner="正在分析热门上涨榜，计算技术指标（约30-60秒）...")
+    @st.cache_data(ttl=900, show_spinner="正在分析涨停潜力，计算技术指标（约30-60秒）...")
     def load_hot_picks():
         return pick_top3(max_candidates=30)
 
@@ -274,7 +273,7 @@ with tab_picks:
         st.cache_data.clear()
         st.rerun()
 
-    with st.spinner("正在从东方财富获取热门榜并计算技术指标..."):
+    with st.spinner("正在获取热门榜并计算涨停潜力..."):
         try:
             df_picks = load_hot_picks()
             picks_ok = not df_picks.empty
@@ -283,7 +282,6 @@ with tab_picks:
             picks_ok = False
 
     if picks_ok:
-        # 展示 Top3 卡片
         cols = st.columns(3)
         medals = ["🥇", "🥈", "🥉"]
         for i, (col, (_, row)) in enumerate(zip(cols, df_picks.iterrows())):
@@ -293,27 +291,28 @@ with tab_picks:
                 st.markdown(f"""
 | 指标 | 数值 |
 |------|------|
-| 综合得分 | **{row['综合得分']}** / 100 |
+| 涨停潜力分 | **{row['涨停潜力分']}** / 100 |
 | 热度排名上升 | {int(row['热度排名上升'])} 位 |
+| 量比 | **{row['量比']}x** |
+| RSI(14) | {row['RSI14']} ↑{row['RSI动量']:+.0f} |
 | MA5 / MA20 | {row['MA5']} / {row['MA20']} |
-| RSI(14) | {row['RSI14']} |
 | 60日区间位 | {row['60日区间位%']}% |
-| 量比 | {row['量比']}x |
+| 5日涨幅 | {row['5日涨幅%']}% |
 """)
-                st.success(f"**亮点**：{row['理由']}")
+                st.success(f"**判断依据**：{row['理由']}")
 
         st.divider()
 
-        # 评分明细表
         with st.expander("查看完整评分明细"):
             show = df_picks[["name", "code", "最新价", "涨跌幅%", "热度排名上升",
-                              "MA5", "MA20", "RSI14", "60日区间位%", "量比", "综合得分", "理由"]].copy()
+                              "量比", "RSI14", "RSI动量", "60日区间位%",
+                              "5日涨幅%", "涨停潜力分", "理由"]].copy()
             show.index = [f"#{i+1}" for i in range(len(show))]
             st.dataframe(show, use_container_width=True)
 
-        st.info(
-            "⚠️ 选股仅基于当日技术面，未考虑基本面、消息面及行业趋势。"
-            "建议结合「今日资金流向」验证所在板块强弱后再决策。"
+        st.warning(
+            "⚠️ 涨停预测基于技术形态，无法保证结果。建议小仓位跟踪，"
+            "设好止损（跌破今日开盘价立即止损）。"
         )
     else:
         st.warning("暂无数据，请稍后重试或点击「重新分析」")
