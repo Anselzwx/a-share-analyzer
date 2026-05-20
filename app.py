@@ -209,10 +209,11 @@ with tab_hist:
 # ════════════════════════════════════════════════════════════
 with tab_watch:
     @st.cache_data(ttl=3600, show_spinner="正在拉取自选股历史数据...")
-    def load_watchlist():
+    def load_watchlist(watchlist_key: str):
         return get_all_watchlist_hist(start="20250101")
 
-    df_watch = load_watchlist()
+    _watchlist_key = ",".join(sorted(WATCHLIST.keys()))
+    df_watch = load_watchlist(_watchlist_key)
 
     if df_watch.empty:
         st.error("自选股数据获取失败")
