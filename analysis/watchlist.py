@@ -55,13 +55,12 @@ def get_all_watchlist_hist(start: str = "20250101") -> pd.DataFrame:
             name_map = {v: k for k, v in WATCHLIST.items()}
             rt["name"] = rt["code"].map(name_map)
             rt = rt.dropna(subset=["name"])
-            today = rt["date"].iloc[0].normalize() if not rt.empty else None
-            if today is not None:
-                # 去掉历史数据中已有当日行的股票（避免重复）
-                hist = hist[hist["date"].dt.normalize() < today]
-                hist = pd.concat([hist, rt[hist.columns.intersection(rt.columns)
-                                           .union(["name","code","date","open","high","low",
-                                                   "close","volume","pct_change"])]], ignore_index=True)
+            today = pd.Timestamp.now().normalize()
+            # 去掉历史数据里已有今日行的记录，再拼入实时数据
+            hist = hist[hist["date"].dt.normalize() < today]
+            keep_cols = ["name", "code", "date", "open", "high", "low", "close", "volume", "pct_change"]
+            rt_clean = rt[[c for c in keep_cols if c in rt.columns]].copy()
+            hist = pd.concat([hist, rt_clean], ignore_index=True)
     except Exception:
         pass
 

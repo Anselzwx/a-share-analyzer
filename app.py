@@ -208,11 +208,11 @@ with tab_hist:
 # Tab 3：自选股
 # ════════════════════════════════════════════════════════════
 with tab_watch:
-    @st.cache_data(ttl=3600, show_spinner="正在拉取自选股历史数据...")
+    @st.cache_data(ttl=900, show_spinner="正在拉取自选股历史数据...")
     def load_watchlist(watchlist_key: str):
         return get_all_watchlist_hist(start="20250101")
 
-    _watchlist_key = ",".join(sorted(WATCHLIST.keys()))
+    _watchlist_key = ",".join(sorted(WATCHLIST.keys())) + "_" + datetime.now().strftime("%Y%m%d")
     df_watch = load_watchlist(_watchlist_key)
 
     if df_watch.empty:
