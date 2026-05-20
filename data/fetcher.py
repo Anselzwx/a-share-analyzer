@@ -71,6 +71,48 @@ def fetch_stock_quote(code: str) -> dict:
     return {"code": code, "price": price, "raw": data}
 
 
+def fetch_stock_realtime(codes: list) -> pd.DataFrame:
+    """通过新浪行情接口拉取多只股票当日实时/收盘数据，返回含 date/open/high/low/close/volume/pct_change/code 的 DataFrame。"""
+    import requests
+    from datetime import date
+
+    def _prefix(code):
+        return "sh" if (code.startswith("6") or code.startswith("5")) else "sz"
+
+    symbols = ",".join(f"{_prefix(c)}{c}" for c in codes)
+    url = f"http://hq.sinajs.cn/list={symbols}"
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "http://finance.sina.com.cn"}
+    try:
+        r = requests.get(url, headers=headers, timeout=8)
+        r.encoding = "gbk"
+    except Exception:
+        return pd.DataFrame()
+
+    records = []
+    for line in r.text.strip().splitlines():
+        try:
+            code_part = line.split("_")[2].split("=")[0]
+            code = code_part[2:]
+            vals = line.split('"')[1].split(",")
+            if len(vals) < 32 or vals[0] == "":
+                continue
+            yclose = float(vals[2])
+            close  = float(vals[3])
+            records.append({
+                "code":       code,
+                "date":       pd.to_datetime(vals[30]),
+                "open":       float(vals[1]),
+                "high":       float(vals[4]),
+                "low":        float(vals[5]),
+                "close":      close,
+                "volume":     float(vals[8]),
+                "pct_change": round((close / yclose - 1) * 100, 4) if yclose else None,
+            })
+        except Exception:
+            continue
+    return pd.DataFrame(records)
+
+
 def fetch_stock_hist(code: str, start: str = "20250101") -> pd.DataFrame:
     """个股日K线（前复权，新浪财经源，国内直连）"""
     # 新浪接口需要 sh/sz/of 前缀

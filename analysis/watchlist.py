@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from data.cache import get_or_fetch, cache_date, save, load, is_stale
-from data.fetcher import fetch_stock_hist
+from data.fetcher import fetch_stock_hist, fetch_stock_realtime
 
 # 自选股列表：名称 -> 代码
 WATCHLIST = {
@@ -46,7 +46,26 @@ def get_all_watchlist_hist(start: str = "20250101") -> pd.DataFrame:
             continue
     if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+    hist = pd.concat(frames, ignore_index=True)
+
+    # 拼入今日实时行情（补上 akshare 日线尚未更新的当日数据）
+    try:
+        rt = fetch_stock_realtime(list(WATCHLIST.values()))
+        if not rt.empty:
+            name_map = {v: k for k, v in WATCHLIST.items()}
+            rt["name"] = rt["code"].map(name_map)
+            rt = rt.dropna(subset=["name"])
+            today = rt["date"].iloc[0].normalize() if not rt.empty else None
+            if today is not None:
+                # 去掉历史数据中已有当日行的股票（避免重复）
+                hist = hist[hist["date"].dt.normalize() < today]
+                hist = pd.concat([hist, rt[hist.columns.intersection(rt.columns)
+                                           .union(["name","code","date","open","high","low",
+                                                   "close","volume","pct_change"])]], ignore_index=True)
+    except Exception:
+        pass
+
+    return hist
 
 
 def compute_stock_stats(df: pd.DataFrame) -> pd.DataFrame:
