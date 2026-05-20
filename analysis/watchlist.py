@@ -25,11 +25,11 @@ def get_stock_hist(code: str, name: str, start: str = "20250101") -> pd.DataFram
         cached = load(key)
         if cached is not None:
             cached["date"] = pd.to_datetime(cached["date"])
-            cached["name"] = name          # 补上名称（旧缓存可能没有）
-            cached["code"] = code          # 补上代码（旧缓存可能没有）
+            cached["name"] = name
+            cached["code"] = code
             start_dt = pd.to_datetime(start)
             return cached[cached["date"] >= start_dt].copy()
-    df = fetch_stock_hist(code, start="20000101")  # 拉全历史，缓存在本地
+    df = fetch_stock_hist(code, start="20000101")
     df["name"] = name
     save(key, df)
     start_dt = pd.to_datetime(start)
@@ -47,19 +47,25 @@ def get_all_watchlist_hist(start: str = "20250101") -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     hist = pd.concat(frames, ignore_index=True)
+    hist["date"] = pd.to_datetime(hist["date"])
 
-    # 拼入今日实时行情（补上 akshare 日线尚未更新的当日数据）
+    today = pd.Timestamp.now().normalize()
+    latest_in_hist = hist["date"].dt.normalize().max()
+
+    # 历史数据已包含今日则直接返回
+    if latest_in_hist >= today:
+        return hist
+
+    # 历史数据不含今日，用新浪实时接口补一行
     try:
         rt = fetch_stock_realtime(list(WATCHLIST.values()))
         if not rt.empty:
             name_map = {v: k for k, v in WATCHLIST.items()}
             rt["name"] = rt["code"].map(name_map)
             rt = rt.dropna(subset=["name"])
-            today = pd.Timestamp.now().normalize()
-            # 去掉历史数据里已有今日行的记录，再拼入实时数据
-            hist = hist[hist["date"].dt.normalize() < today]
-            keep_cols = ["name", "code", "date", "open", "high", "low", "close", "volume", "pct_change"]
-            rt_clean = rt[[c for c in keep_cols if c in rt.columns]].copy()
+            rt["date"] = pd.to_datetime(rt["date"])
+            keep = ["name", "code", "date", "open", "high", "low", "close", "volume", "pct_change"]
+            rt_clean = rt[[c for c in keep if c in rt.columns]].copy()
             hist = pd.concat([hist, rt_clean], ignore_index=True)
     except Exception:
         pass

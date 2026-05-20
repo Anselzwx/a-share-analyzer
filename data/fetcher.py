@@ -72,45 +72,72 @@ def fetch_stock_quote(code: str) -> dict:
 
 
 def fetch_stock_realtime(codes: list) -> pd.DataFrame:
-    """通过新浪行情接口拉取多只股票当日实时/收盘数据，返回含 date/open/high/low/close/volume/pct_change/code 的 DataFrame。"""
+    """拉取多只股票当日实时/收盘数据。优先新浪，失败则用 akshare stock_zh_a_hist 兜底。"""
     import requests
-    from datetime import date
 
     def _prefix(code):
         return "sh" if (code.startswith("6") or code.startswith("5")) else "sz"
 
-    symbols = ",".join(f"{_prefix(c)}{c}" for c in codes)
-    url = f"http://hq.sinajs.cn/list={symbols}"
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "http://finance.sina.com.cn"}
-    try:
-        r = requests.get(url, headers=headers, timeout=8)
-        r.encoding = "gbk"
-    except Exception:
-        return pd.DataFrame()
-
+    # ── 新浪接口 ──────────────────────────────────────────────
     records = []
-    for line in r.text.strip().splitlines():
-        try:
-            code_part = line.split("_")[2].split("=")[0]
-            code = code_part[2:]
-            vals = line.split('"')[1].split(",")
-            if len(vals) < 32 or vals[0] == "":
+    try:
+        symbols = ",".join(f"{_prefix(c)}{c}" for c in codes)
+        url = f"http://hq.sinajs.cn/list={symbols}"
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "http://finance.sina.com.cn"}
+        r = requests.get(url, headers=headers, timeout=6)
+        r.encoding = "gbk"
+        for line in r.text.strip().splitlines():
+            try:
+                code_part = line.split("_")[2].split("=")[0]
+                code = code_part[2:]
+                vals = line.split('"')[1].split(",")
+                if len(vals) < 32 or vals[0] == "":
+                    continue
+                yclose = float(vals[2])
+                close  = float(vals[3])
+                records.append({
+                    "code":       code,
+                    "date":       pd.to_datetime(vals[30]),
+                    "open":       float(vals[1]),
+                    "high":       float(vals[4]),
+                    "low":        float(vals[5]),
+                    "close":      close,
+                    "volume":     float(vals[8]),
+                    "pct_change": round((close / yclose - 1) * 100, 4) if yclose else None,
+                })
+            except Exception:
                 continue
-            yclose = float(vals[2])
-            close  = float(vals[3])
-            records.append({
+    except Exception:
+        pass
+
+    if records:
+        return pd.DataFrame(records)
+
+    # ── fallback：akshare stock_zh_a_hist（东财日线，Cloud 上可用）──
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y%m%d")
+    rows = []
+    for code in codes:
+        try:
+            df = ak.stock_zh_a_hist(symbol=code, period="daily",
+                                    start_date=today, end_date=today,
+                                    adjust="qfq")
+            if df.empty:
+                continue
+            row = df.iloc[-1]
+            rows.append({
                 "code":       code,
-                "date":       pd.to_datetime(vals[30]),
-                "open":       float(vals[1]),
-                "high":       float(vals[4]),
-                "low":        float(vals[5]),
-                "close":      close,
-                "volume":     float(vals[8]),
-                "pct_change": round((close / yclose - 1) * 100, 4) if yclose else None,
+                "date":       pd.to_datetime(row["日期"]),
+                "open":       float(row["开盘"]),
+                "high":       float(row["最高"]),
+                "low":        float(row["最低"]),
+                "close":      float(row["收盘"]),
+                "volume":     float(row["成交量"]),
+                "pct_change": float(row["涨跌幅"]),
             })
         except Exception:
             continue
-    return pd.DataFrame(records)
+    return pd.DataFrame(rows)
 
 
 def fetch_stock_hist(code: str, start: str = "20250101") -> pd.DataFrame:
