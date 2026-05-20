@@ -3,3 +3,9 @@ streamlit
 pandas
 numpy
 plotly
+xgboost
+scikit-learn
+joblib
+pyarrow
+lxml
+beautifulsoup4

@@ -16,6 +16,8 @@ from analysis.market_sentiment import get_sentiment_summary, get_northbound
 from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST
 from analysis.hot_picks import pick_top3
 from analysis.power_sector import get_power_top50, pick_power_top5
+from ml.predictor import predict_batch
+from ml.train import load_models
 from ui.charts import (
     sector_heatmap, bar_inflow, sentiment_gauge, northbound_bar,
     sector_hist_line, sector_cumulative_line, sector_heatmap_calendar,
@@ -91,8 +93,8 @@ col4.metric("全市场主力合计", f"{total_inflow:.1f} 亿")
 st.divider()
 
 # ── 主 Tab ────────────────────────────────────────────────────
-tab_today, tab_hist, tab_watch, tab_picks, tab_power = st.tabs(
-    ["今日资金流向", "历史趋势对比", "自选股", "🔥 热门精选", "⚡ 电力板块"]
+tab_today, tab_hist, tab_watch, tab_picks, tab_power, tab_ml = st.tabs(
+    ["今日资金流向", "历史趋势对比", "自选股", "🔥 热门精选", "⚡ 电力板块", "🤖 ML 涨停预测"]
 )
 
 # ════════════════════════════════════════════════════════════
@@ -410,3 +412,166 @@ MA5={row['MA5']} MA20={row['MA20']} ｜ RSI={row['RSI14']} ｜ 区间位{row['60
             "⚠️ 电力板块今日整体表现强势时，注意追高风险。"
             "精选基于技术面打分，建议结合板块资金流向与个股基本面综合判断。"
         )
+
+# ════════════════════════════════════════════════════════════
+# Tab 6：ML 涨停预测
+# ════════════════════════════════════════════════════════════
+with tab_ml:
+    st.subheader("🤖 机器学习涨停概率预测")
+    st.caption(
+        "基于 **XGBoost + 逻辑回归** 双模型集成，训练集覆盖 35 只股票 2020-2026 年共 5 万条样本。"
+        "输入股票代码，输出次日涨停概率（≥9.5%）及特征解析。"
+    )
+
+    # 加载模型元信息
+    _, _, meta = load_models()
+
+    if meta is None:
+        st.warning("模型尚未训练。首次训练需拉取 35 只股票历史数据，约需 5-8 分钟。")
+        if st.button("🏋️ 开始训练模型", key="train_model"):
+            with st.spinner("正在训练中，请耐心等待（约5-8分钟）..."):
+                try:
+                    from ml.train import run_training_pipeline
+                    run_training_pipeline(force_retrain=True)
+                    st.success("训练完成！请刷新页面。")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"训练失败：{e}")
+        st.stop()
+
+    # 模型性能展示
+    with st.expander("📊 模型性能报告", expanded=False):
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("XGBoost AUC", f"{meta.get('xgb_auc', 0):.3f}")
+        mc2.metric("XGBoost CV AUC", f"{meta.get('xgb_cv_auc', 0):.3f}")
+        mc3.metric("逻辑回归 AUC", f"{meta.get('lr_auc', 0):.3f}")
+        mc4.metric("训练时间", meta.get("trained_at", "—")[:10])
+
+        st.markdown("""
+**模型说明：**
+- **XGBoost**：梯度提升树，捕捉非线性特征交互（量比×RSI×均线排列等）
+- **逻辑回归**：线性基线，每个特征有明确系数，可解释性强
+- **集成**：XGBoost×0.7 + 逻辑回归×0.3，降低单模型偶然误差
+- **训练切分**：按时间80/20切分，严禁随机打乱（防未来数据泄漏）
+- **AUC 0.82**：随机猜测=0.5，完美=1.0；0.82表示模型有显著预测力
+""")
+
+        # 特征重要性图（XGBoost）
+        if meta.get("feature_importance"):
+            fi = pd.Series(meta["feature_importance"]).sort_values(ascending=True).tail(15)
+            fig_fi = go.Figure(go.Bar(
+                x=fi.values, y=fi.index, orientation="h",
+                marker_color="#1f77b4",
+                text=[f"{v:.3f}" for v in fi.values],
+                textposition="outside",
+            ))
+            fig_fi.update_layout(
+                title="XGBoost 特征重要性 Top15",
+                height=420, margin=dict(t=50, l=150, r=60, b=30),
+                xaxis_title="重要性得分",
+            )
+            st.plotly_chart(fig_fi, use_container_width=True)
+
+        # 逻辑回归系数
+        if meta.get("lr_coef"):
+            coef = pd.Series(meta["lr_coef"]).sort_values()
+            fig_coef = go.Figure()
+            fig_coef.add_trace(go.Bar(
+                x=coef[coef > 0].values,
+                y=coef[coef > 0].index,
+                orientation="h", name="正向驱动",
+                marker_color="#d62728",
+            ))
+            fig_coef.add_trace(go.Bar(
+                x=coef[coef <= 0].values,
+                y=coef[coef <= 0].index,
+                orientation="h", name="负向抑制",
+                marker_color="#2ca02c",
+            ))
+            fig_coef.update_layout(
+                title="逻辑回归特征系数（正=促进涨停，负=抑制涨停）",
+                height=500, margin=dict(t=50, l=150, r=60, b=30),
+                xaxis_title="系数值", barmode="overlay",
+            )
+            st.plotly_chart(fig_coef, use_container_width=True)
+
+    st.divider()
+
+    # 预测区
+    col_input, col_result = st.columns([1, 2])
+
+    with col_input:
+        st.markdown("#### 输入待预测股票")
+        default_codes = "600795\n600780\n000027\n600023\n600452"
+        raw_input = st.text_area(
+            "每行一个代码（6位）",
+            value=default_codes,
+            height=160,
+        )
+        predict_btn = st.button("🚀 开始预测", use_container_width=True)
+        st.caption("预测的是「明日涨停」概率，基于今日收盘后特征。集成概率 > 20% 可重点关注。")
+
+    with col_result:
+        st.markdown("#### 预测结果")
+
+        if predict_btn:
+            codes_input = [c.strip() for c in raw_input.strip().splitlines() if c.strip()]
+            if not codes_input:
+                st.warning("请输入至少一个股票代码")
+            else:
+                with st.spinner(f"正在预测 {len(codes_input)} 只股票..."):
+                    try:
+                        df_pred = predict_batch(codes_input)
+                        pred_ok = not df_pred.empty
+                    except Exception as e:
+                        st.error(f"预测失败：{e}")
+                        pred_ok = False
+
+                if pred_ok:
+                    # 概率条形图
+                    df_pred_show = df_pred.copy()
+                    df_pred_show["涨停概率%"] = (df_pred_show["ensemble_prob"] * 100).round(1)
+                    df_pred_show["XGB%"] = (df_pred_show["xgb_prob"] * 100).round(1)
+                    df_pred_show["LR%"] = (df_pred_show["lr_prob"] * 100).round(1)
+
+                    colors = ["#d62728" if p >= 20 else "#ff7f0e" if p >= 10 else "#aec7e8"
+                              for p in df_pred_show["涨停概率%"]]
+                    fig_pred = go.Figure(go.Bar(
+                        x=df_pred_show["涨停概率%"],
+                        y=df_pred_show["code"],
+                        orientation="h",
+                        marker_color=colors,
+                        text=[f"{p:.1f}%" for p in df_pred_show["涨停概率%"]],
+                        textposition="outside",
+                    ))
+                    fig_pred.add_vline(x=20, line_dash="dash", line_color="red",
+                                       annotation_text="20%关注线")
+                    fig_pred.update_layout(
+                        title="明日涨停集成概率",
+                        height=max(300, len(codes_input) * 45),
+                        xaxis_title="涨停概率%",
+                        xaxis_range=[0, max(df_pred_show["涨停概率%"].max() * 1.3, 30)],
+                        margin=dict(t=50, l=80, r=80, b=30),
+                    )
+                    st.plotly_chart(fig_pred, use_container_width=True)
+
+                    # 明细表
+                    show_table = df_pred_show[["code", "涨停概率%", "XGB%", "LR%"]].copy()
+                    show_table.columns = ["代码", "集成概率%", "XGBoost%", "逻辑回归%"]
+                    show_table.index = range(1, len(show_table) + 1)
+                    st.dataframe(show_table, use_container_width=True)
+
+                    # 重点提示
+                    top = df_pred_show[df_pred_show["涨停概率%"] >= 15]
+                    if not top.empty:
+                        codes_str = "、".join(top["code"].tolist())
+                        st.success(f"⚡ 概率≥15% 的股票：**{codes_str}**，可重点关注")
+                    else:
+                        st.info("当前输入股票中无高概率涨停候选，建议换一批候选或等待更好时机")
+        else:
+            st.info("👈 输入股票代码后点击「开始预测」")
+
+    st.warning(
+        "⚠️ ML 模型基于历史统计规律，AUC=0.82 意味着排序能力较强，但绝对概率不等于胜率。"
+        "概率高不等于一定涨停，请严格设置止损（建议 -3%）。"
+    )
