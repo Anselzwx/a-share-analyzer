@@ -16,6 +16,7 @@ import requests
 import akshare as ak
 from io import StringIO
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from data.cache import is_stale, load, save, cache_date
 
 
@@ -262,13 +263,12 @@ def pick_sector_top5(sector_name: str, candidates: pd.DataFrame = None) -> pd.Da
     if candidates.empty:
         return pd.DataFrame()
 
-    records = []
-    for _, row in candidates.iterrows():
+    def _process_row(row):
         ind = _fetch_hist_indicators(row["code"])
         if ind is None:
-            continue
+            return None
         score, reason = _score(row, ind, cfg["pe_low"], cfg["pe_high"])
-        records.append({
+        return {
             "name": row["名称"], "code": row["code"],
             "最新价": row["现价"], "今日涨跌幅%": row["涨跌幅(%)"],
             "换手率%": row["换手(%)"], "量比": row["量比"],
@@ -276,7 +276,16 @@ def pick_sector_top5(sector_name: str, candidates: pd.DataFrame = None) -> pd.Da
             "MA5": ind["ma5"], "MA20": ind["ma20"],
             "RSI14": ind["rsi"], "60日区间位%": ind["range_pos"],
             "5日涨幅%": ind["gain_5d"], "综合得分": score, "买入理由": reason,
-        })
+        }
+
+    records = []
+    rows = [row for _, row in candidates.iterrows()]
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(_process_row, row) for row in rows]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                records.append(res)
 
     if not records:
         return pd.DataFrame()

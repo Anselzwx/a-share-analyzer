@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pandas as pd
 import numpy as np
 import akshare as ak
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from data.cache import is_stale, load, save, cache_date
 
 
@@ -276,16 +277,14 @@ def pick_top3(max_candidates: int = 30) -> pd.DataFrame:
     # 按热度动量 + 涨幅综合排序，取前 max_candidates 只
     df_hot = df_hot.sort_values("排名较昨日变动", ascending=False).head(max_candidates)
 
-    records = []
-    for _, row in df_hot.iterrows():
-        code = row["pure_code"]
-        ind = _compute_indicators(code)
+    def _process(row):
+        ind = _compute_indicators(row["pure_code"])
         if ind is None:
-            continue
+            return None
         score, reason = _score_zt_potential(row, ind)
-        records.append({
+        return {
             "name": row["股票名称"],
-            "code": code,
+            "code": row["pure_code"],
             "最新价": row["最新价"],
             "涨跌幅%": row["涨跌幅"],
             "热度排名上升": row["排名较昨日变动"],
@@ -298,7 +297,16 @@ def pick_top3(max_candidates: int = 30) -> pd.DataFrame:
             "5日涨幅%": round(ind["gain_5d"], 1),
             "涨停潜力分": score,
             "理由": reason,
-        })
+        }
+
+    records = []
+    rows = [row for _, row in df_hot.iterrows()]
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(_process, row) for row in rows]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                records.append(res)
 
     if not records:
         return pd.DataFrame()
