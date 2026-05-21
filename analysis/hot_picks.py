@@ -21,9 +21,56 @@ from data.cache import is_stale, load, save, cache_date
 
 
 def fetch_hot_up_list() -> pd.DataFrame:
-    """东方财富热门上涨榜（当日实时，100条）"""
-    df = ak.stock_hot_up_em()
-    df["pure_code"] = df["代码"].str.replace("SZ", "").str.replace("SH", "")
+    """东方财富热门飙升榜（当日实时，100条）"""
+    import requests
+
+    # Step 1：拿飙升榜排名列表
+    url1 = "https://emappdata.eastmoney.com/stockrank/getAllHisRcList"
+    payload = {"appId": "appId01", "globalId": "786e4c21-70dc-435a-93bb-38",
+               "marketType": "", "pageNo": 1, "pageSize": 100}
+    r1 = requests.post(url1, json=payload, timeout=10)
+    rank_data = r1.json()["data"]
+    rank_df = pd.DataFrame(rank_data)   # 含 sc, rk, hrc
+
+    # Step 2：用新浪接口拿实时行情（最新价 + 涨跌幅）
+    codes = rank_df["sc"].tolist()  # 形如 SZ000001 / SH600000
+    sina_syms = ",".join(
+        ("sz" + c[2:]) if c.startswith("SZ") else ("sh" + c[2:])
+        for c in codes
+    )
+    r2 = requests.get(
+        f"http://hq.sinajs.cn/list={sina_syms}",
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "http://finance.sina.com.cn"},
+        timeout=10,
+    )
+    r2.encoding = "gbk"
+
+    quote_rows = []
+    for line in r2.text.strip().splitlines():
+        try:
+            vals = line.split('"')[1].split(",")
+            if len(vals) < 32 or vals[0] == "":
+                quote_rows.append({"股票名称": "", "最新价": None, "涨跌幅": None})
+                continue
+            yclose = float(vals[2])
+            close  = float(vals[3])
+            quote_rows.append({
+                "股票名称": vals[0],
+                "最新价":   close,
+                "涨跌幅":   round((close / yclose - 1) * 100, 2) if yclose else None,
+            })
+        except Exception:
+            quote_rows.append({"股票名称": "", "最新价": None, "涨跌幅": None})
+
+    quote_df = pd.DataFrame(quote_rows)
+    df = pd.concat([rank_df[["sc", "rk", "hrc"]].reset_index(drop=True),
+                    quote_df.reset_index(drop=True)], axis=1)
+    df = df.rename(columns={"rk": "当前排名", "hrc": "排名较昨日变动", "sc": "代码"})
+    df["最新价"]        = pd.to_numeric(df["最新价"], errors="coerce")
+    df["涨跌幅"]        = pd.to_numeric(df["涨跌幅"], errors="coerce")
+    df["排名较昨日变动"]  = pd.to_numeric(df["排名较昨日变动"], errors="coerce")
+    df["pure_code"]    = df["代码"].str.replace("SZ", "").str.replace("SH", "")
+    df = df.dropna(subset=["最新价", "涨跌幅"])
     return df
 
 
