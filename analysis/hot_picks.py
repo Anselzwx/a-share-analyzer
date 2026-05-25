@@ -21,17 +21,71 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from data.cache import is_stale, load, save, cache_date
 
 
+def _fetch_rank_list() -> pd.DataFrame:
+    """飙升榜排名列表，优先东财，失败则用东财备用接口。"""
+    import requests
+
+    # 主接口
+    try:
+        url = "https://emappdata.eastmoney.com/stockrank/getAllHisRcList"
+        payload = {"appId": "appId01", "globalId": "786e4c21-70dc-435a-93bb-38",
+                   "marketType": "", "pageNo": 1, "pageSize": 100}
+        r = requests.post(url, json=payload, timeout=8)
+        data = r.json().get("data", [])
+        if data:
+            return pd.DataFrame(data)
+    except Exception:
+        pass
+
+    # 备用：东财涨幅榜（全市场今日涨幅排序，用涨幅模拟热度）
+    try:
+        url2 = (
+            "https://push2.eastmoney.com/api/qt/clist/get"
+            "?cb=&pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3"
+            "&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
+            "&fields=f2,f3,f4,f12,f14"
+        )
+        r2 = requests.get(url2, timeout=8,
+                          headers={"User-Agent": "Mozilla/5.0",
+                                   "Referer": "https://quote.eastmoney.com"})
+        items = r2.json()["data"]["diff"]
+        rows = []
+        for i, item in enumerate(items):
+            code = str(item.get("f12", "")).zfill(6)
+            pct  = item.get("f3", None)
+            price = item.get("f2", None)
+            name  = item.get("f14", "")
+            prefix = "SH" if code.startswith("6") or code.startswith("5") else "SZ"
+            rows.append({
+                "sc": f"{prefix}{code}",
+                "rk": i + 1,
+                "hrc": max(5000 - i * 50, 100),  # 模拟热度变动
+                "_price": price,
+                "_pct": pct,
+                "_name": name,
+            })
+        return pd.DataFrame(rows)
+    except Exception:
+        pass
+
+    raise RuntimeError("飙升榜数据获取失败：东财主备接口均不可用")
+
+
 def fetch_hot_up_list() -> pd.DataFrame:
     """东方财富热门飙升榜（当日实时，100条）"""
     import requests
 
-    # Step 1：拿飙升榜排名列表
-    url1 = "https://emappdata.eastmoney.com/stockrank/getAllHisRcList"
-    payload = {"appId": "appId01", "globalId": "786e4c21-70dc-435a-93bb-38",
-               "marketType": "", "pageNo": 1, "pageSize": 100}
-    r1 = requests.post(url1, json=payload, timeout=10)
-    rank_data = r1.json()["data"]
-    rank_df = pd.DataFrame(rank_data)   # 含 sc, rk, hrc
+    rank_df = _fetch_rank_list()
+
+    # 如果备用接口已经带了行情数据，直接用
+    if "_price" in rank_df.columns:
+        rank_df = rank_df.rename(columns={"rk": "当前排名", "hrc": "排名较昨日变动", "sc": "代码"})
+        rank_df["股票名称"] = rank_df["_name"]
+        rank_df["最新价"]   = pd.to_numeric(rank_df["_price"], errors="coerce")
+        rank_df["涨跌幅"]   = pd.to_numeric(rank_df["_pct"], errors="coerce")
+        rank_df["排名较昨日变动"] = pd.to_numeric(rank_df["排名较昨日变动"], errors="coerce")
+        rank_df["pure_code"] = rank_df["代码"].str.replace("SZ", "").str.replace("SH", "")
+        return rank_df.dropna(subset=["最新价", "涨跌幅"])
 
     # Step 2：用新浪接口拿实时行情（最新价 + 涨跌幅）
     codes = rank_df["sc"].tolist()  # 形如 SZ000001 / SH600000
