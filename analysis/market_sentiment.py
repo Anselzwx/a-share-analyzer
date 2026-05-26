@@ -44,6 +44,31 @@ def compute_sentiment_score(limit_up_count: int, limit_down_count: int) -> dict:
     }
 
 
+def _fetch_limit_down_count() -> int:
+    """获取今日跌停股数量。"""
+    import akshare as ak
+    from datetime import datetime
+    try:
+        df = ak.stock_zt_pool_dtgc_em(date=datetime.now().strftime("%Y%m%d"))
+        return len(df)
+    except Exception:
+        pass
+    # 备用：新浪涨跌停统计
+    try:
+        import requests
+        r = requests.get(
+            "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php"
+            "/Market_Center.getHQNodeDataSimple?node=dt_szsh&symbol=&_s_r_a=init",
+            headers={"Referer": "http://finance.sina.com.cn"},
+            timeout=6,
+        )
+        import json
+        data = json.loads(r.text)
+        return len(data) if isinstance(data, list) else 0
+    except Exception:
+        return 0
+
+
 def get_sentiment_summary() -> dict:
     try:
         lu_df = get_limit_up()
@@ -51,7 +76,6 @@ def get_sentiment_summary() -> dict:
     except Exception:
         limit_up_count = 0
 
-    # akshare 暂无直接跌停板接口，用0占位
-    limit_down_count = 0
+    limit_down_count = _fetch_limit_down_count()
 
     return compute_sentiment_score(limit_up_count, limit_down_count)
