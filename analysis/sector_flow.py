@@ -3,7 +3,8 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from data.cache import get_or_fetch, cache_date, save, load, is_stale
+from data.cache import (get_or_fetch, cache_date, save, load, is_stale,
+                        append_daily_sector_flow, load_sector_flow_history)
 from data.fetcher import fetch_sector_flow, fetch_concept_flow, fetch_multi_sector_hist
 
 
@@ -18,6 +19,12 @@ def get_sector_flow(use_concept: bool = False) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # 每次拉取今日数据时顺手追加进本地历史
+    try:
+        append_daily_sector_flow(df, is_concept=use_concept)
+    except Exception:
+        pass
+
     return df
 
 
@@ -31,19 +38,31 @@ def top_outflow_sectors(df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
 
 def get_multi_sector_hist(sector_names: list, max_age_minutes: int = 360) -> pd.DataFrame:
     """
-    拉取多个板块的历史资金流向，缓存一天内复用。
-    历史数据变化慢，缓存6小时。
+    拉取多个板块的历史资金流向。
+    优先读本地滚动历史（每日今日数据追加），远程接口失败时不报错。
     """
+    # 优先：本地滚动历史（从每日今日数据累积，不依赖被封的远程接口）
+    local_df = load_sector_flow_history(sector_names)
+    if not local_df.empty:
+        local_df["main_net_inflow"] = pd.to_numeric(local_df["main_net_inflow"], errors="coerce")
+        return local_df
+
+    # 备用：尝试远程接口（Cloud 上可能失败）
     key = f"sector_hist_{'_'.join(sector_names[:5])}_{cache_date()}"
     if not is_stale(key, max_age_minutes):
         cached = load(key)
         if cached is not None:
             cached["date"] = pd.to_datetime(cached["date"])
             return cached
-    df = fetch_multi_sector_hist(sector_names)
-    if not df.empty:
-        save(key, df)
-    return df
+    try:
+        df = fetch_multi_sector_hist(sector_names)
+        if not df.empty:
+            save(key, df)
+            return df
+    except Exception:
+        pass
+
+    return pd.DataFrame()
 
 
 def compute_cumulative_inflow(df: pd.DataFrame) -> pd.DataFrame:

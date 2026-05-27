@@ -164,7 +164,12 @@ with tab_hist:
         df_hist = load_hist(tuple(selected))
 
         if df_hist.empty:
-            st.error("历史数据获取失败，请稍后重试")
+            st.info(
+                "📊 历史数据正在积累中。\n\n"
+                "本应用每次加载「今日资金流向」时会自动记录当日数据，"
+                "**明日起**即可看到历史趋势对比图。\n\n"
+                "请先切换到「今日资金流向」tab 加载一次数据。"
+            )
         else:
             df_hist["main_net_inflow_億"] = df_hist["main_net_inflow"] / 1e8
 

@@ -1,4 +1,6 @@
 cache/
+!cache/sector_flow_history.csv
+!cache/concept_flow_history.csv
 __pycache__/
 *.pyc
 .DS_Store
