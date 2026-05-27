@@ -93,8 +93,10 @@ col4.metric("全市场主力合计", f"{total_inflow:.1f} 亿")
 st.divider()
 
 # ── 主 Tab ────────────────────────────────────────────────────
-tab_today, tab_hist, tab_watch, tab_picks, tab_power, tab_semi, tab_ml = st.tabs(
-    ["今日资金流向", "历史趋势对比", "自选股", "🔥 热门精选", "⚡ 电力板块", "🔬 半导体板块", "🤖 ML 涨停预测"]
+tab_today, tab_hist, tab_watch, tab_picks, tab_power, tab_semi, tab_optical, tab_space, tab_auto, tab_ml = st.tabs(
+    ["今日资金流向", "历史趋势对比", "自选股", "🔥 热门精选",
+     "⚡ 电力板块", "🔬 半导体板块", "💡 光模块", "🚀 商业航天", "🚗 智能驾驶",
+     "🤖 ML 涨停预测"]
 )
 
 # ════════════════════════════════════════════════════════════
@@ -506,7 +508,92 @@ MA5={row['MA5']} MA20={row['MA20']} ｜ RSI={row['RSI14']} ｜ 区间位{row['60
         )
 
 # ════════════════════════════════════════════════════════════
-# Tab 6：ML 涨停预测
+# 通用板块 Tab 渲染函数
+# ════════════════════════════════════════════════════════════
+def render_sector_tab(tab, sector_name: str, icon: str, pe_note: str, tab_key: str):
+    with tab:
+        st.subheader(f"{icon} {sector_name}板块 Top50 行情")
+        st.caption(f"数据来源：同花顺｜{pe_note}｜每30分钟刷新")
+
+        @st.cache_data(ttl=1800, show_spinner=f"正在获取{sector_name}板块成分股数据...")
+        def _load_top50(name=sector_name):
+            return get_sector_top50(name)
+
+        @st.cache_data(ttl=1800, show_spinner=f"正在分析{sector_name}板块，计算技术指标...")
+        def _load_picks(hash_val, name=sector_name):
+            return pick_sector_top5(name)
+
+        if st.button("🔄 重新分析", key=f"refresh_{tab_key}"):
+            st.cache_data.clear()
+            st.rerun()
+
+        with st.spinner(f"正在获取{sector_name}板块数据..."):
+            try:
+                df_top = _load_top50()
+                top_ok = not df_top.empty
+            except Exception as e:
+                st.error(f"{sector_name}板块数据获取失败：{e}")
+                top_ok = False
+
+        if not top_ok:
+            return
+
+        col_list, col_picks = st.columns([3, 2], gap="large")
+
+        with col_list:
+            st.markdown("#### 近期涨幅 Top50")
+            display_cols = ["rank", "名称", "code", "现价", "涨跌幅(%)", "换手(%)", "量比", "市盈率", "流通市值_亿"]
+            show_df = df_top[[c for c in display_cols if c in df_top.columns]].copy()
+            show_df.columns = ["排名", "名称", "代码", "最新价", "涨跌幅%", "换手率%", "量比", "市盈率", "流通市值(亿)"][:len(show_df.columns)]
+            show_df = show_df.reset_index(drop=True)
+
+            def _color(val):
+                try:
+                    v = float(val)
+                    return f"color: {'#d62728' if v > 0 else '#2ca02c'}; font-weight: bold"
+                except Exception:
+                    return ""
+
+            st.dataframe(show_df.style.map(_color, subset=["涨跌幅%"]), use_container_width=True, height=600)
+
+        with col_picks:
+            st.markdown("#### 精选5只：最值得买入")
+            st.caption(f"六维打分：今日动量、均线趋势、RSI、量比、PE估值（{pe_note}）、价格区间")
+
+            with st.spinner("计算技术指标中..."):
+                try:
+                    df_p5 = _load_picks(len(df_top))
+                    picks_ok = not df_p5.empty
+                except Exception as e:
+                    st.error(f"精选分析失败：{e}")
+                    picks_ok = False
+
+            if picks_ok:
+                rank_icons = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+                for i, (_, row) in enumerate(df_p5.iterrows()):
+                    pct_str = f"+{row['今日涨跌幅%']:.2f}%" if row['今日涨跌幅%'] >= 0 else f"{row['今日涨跌幅%']:.2f}%"
+                    st.markdown(f"**{rank_icons[i]} {row['name']}** `{row['code']}`")
+                    m1, m2 = st.columns(2)
+                    m1.metric("最新价", f"¥{row['最新价']:.2f}", pct_str)
+                    m2.metric("综合得分", f"{row['综合得分']} / 100")
+                    st.markdown(f"<small>MA5={row['MA5']} MA20={row['MA20']} ｜ RSI={row['RSI14']} ｜ 区间位{row['60日区间位%']}% ｜ PE={row['市盈率'] if pd.notna(row['市盈率']) else '--'}</small>", unsafe_allow_html=True)
+                    st.success(f"{row['买入理由']}")
+                    st.divider()
+
+                with st.expander("查看5只评分明细"):
+                    p5_show = df_p5[["name", "code", "最新价", "今日涨跌幅%", "RSI14", "60日区间位%", "5日涨幅%", "市盈率", "综合得分", "买入理由"]].copy()
+                    p5_show.index = [f"#{i+1}" for i in range(len(p5_show))]
+                    st.dataframe(p5_show, use_container_width=True)
+            else:
+                st.warning("精选分析暂无结果，请稍后重试")
+
+
+render_sector_tab(tab_optical, "光模块",   "💡", "PE合理区间 20-60", "optical")
+render_sector_tab(tab_space,   "商业航天", "🚀", "PE合理区间 30-80", "space")
+render_sector_tab(tab_auto,    "智能驾驶", "🚗", "PE合理区间 15-40", "auto")
+
+# ════════════════════════════════════════════════════════════
+# Tab 10：ML 涨停预测
 # ════════════════════════════════════════════════════════════
 with tab_ml:
     st.subheader("🤖 机器学习涨停概率预测")

@@ -28,18 +28,21 @@ _HEADERS = {
     )
 }
 
-# 已知板块配置：(THS代码, 显示名, PE合理区间下限, PE合理区间上限)
+# 已知板块配置：ths_code, pe区间, sector_type("thshy"=行业板块 / "gn"=概念板块)
 SECTOR_CONFIG = {
-    "电力":   {"ths_code": "881145", "pe_low": 8,  "pe_high": 28},
-    "半导体": {"ths_code": "881121", "pe_low": 30, "pe_high": 80},
+    "电力":     {"ths_code": "881145", "pe_low": 8,  "pe_high": 28,  "sector_type": "thshy"},
+    "半导体":   {"ths_code": "881121", "pe_low": 30, "pe_high": 80,  "sector_type": "thshy"},
+    "光模块":   {"ths_code": "881129", "pe_low": 20, "pe_high": 60,  "sector_type": "thshy"},
+    "商业航天": {"ths_code": "309130", "pe_low": 30, "pe_high": 80,  "sector_type": "gn"},
+    "智能驾驶": {"ths_code": "881126", "pe_low": 15, "pe_high": 40,  "sector_type": "thshy"},
 }
 
 
-def fetch_sector_stocks(ths_code: str, pages: int = 3) -> pd.DataFrame:
+def fetch_sector_stocks(ths_code: str, pages: int = 3, sector_type: str = "thshy") -> pd.DataFrame:
     """爬取同花顺指定板块成分股实时行情，按涨幅降序返回。"""
     frames = []
     for page in range(1, pages + 1):
-        url = f"http://q.10jqka.com.cn/thshy/detail/code/{ths_code}/page/{page}/"
+        url = f"http://q.10jqka.com.cn/{sector_type}/detail/code/{ths_code}/page/{page}/"
         try:
             r = requests.get(url, headers=_HEADERS, timeout=10)
             soup = BeautifulSoup(r.text, "lxml")
@@ -238,7 +241,7 @@ def get_sector_top50(sector_name: str) -> pd.DataFrame:
         cached = load(key)
         if cached is not None and not cached.empty:
             return _fix_code_col(cached)
-    df = fetch_sector_stocks(cfg["ths_code"], pages=3)
+    df = fetch_sector_stocks(cfg["ths_code"], pages=3, sector_type=cfg.get("sector_type", "thshy"))
     if df.empty:
         return df
     df = df.head(50)
