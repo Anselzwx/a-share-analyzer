@@ -116,6 +116,16 @@ def _fetch_hist_indicators(code: str) -> dict:
         ma20 = close.rolling(20).mean().iloc[-1]
         ma60 = close.rolling(60, min_periods=30).mean().iloc[-1]
 
+        # EMA
+        ema8  = close.ewm(span=8,  adjust=False).mean().iloc[-1]
+        ema21 = close.ewm(span=21, adjust=False).mean().iloc[-1]
+        ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        ema21_series = close.ewm(span=21, adjust=False).mean()
+        ema21_5d_ago = ema21_series.iloc[-6] if len(ema21_series) >= 6 else ema21_series.iloc[-1]
+        ema21_slope = (ema21_series.iloc[-1] - ema21_5d_ago) / (ema21_5d_ago + 1e-9) * 100
+        price_above_ema21 = close.iloc[-1] > ema21
+        full_bull = close.iloc[-1] > ema21 > ema50
+
         delta = close.diff()
         gain = delta.clip(lower=0).rolling(14).mean()
         loss = (-delta.clip(upper=0)).rolling(14).mean()
@@ -133,6 +143,10 @@ def _fetch_hist_indicators(code: str) -> dict:
         return {
             "ma5": round(ma5, 3), "ma10": round(ma10, 3),
             "ma20": round(ma20, 3), "ma60": round(ma60, 3),
+            "ema8": round(ema8, 3), "ema21": round(ema21, 3), "ema50": round(ema50, 3),
+            "ema21_slope": round(ema21_slope, 2),
+            "price_above_ema21": price_above_ema21,
+            "full_bull": full_bull,
             "rsi": round(rsi, 1), "range_pos": round(range_pos, 1),
             "vol_ratio_hist": round(vol_ratio_hist, 2),
             "gain_5d": round(gain_5d, 2), "gain_20d": round(gain_20d, 2),
@@ -162,14 +176,19 @@ def _score(row: pd.Series, ind: dict, pe_low: float, pe_high: float) -> tuple:
     if ind["gain_5d"] >= 30:
         score -= 5; reasons.append("5日累涨过高⚠")
 
-    # 2. MA趋势 20分
+    # 2. EMA趋势 20分（价格>EMA21>EMA50为最强信号）
     ma5, ma10, ma20, ma60 = ind["ma5"], ind["ma10"], ind["ma20"], ind["ma60"]
-    if ma5 > ma10 > ma20:
-        score += 20; reasons.append("均线多头")
+    if ind.get("full_bull"):
+        score += 20; reasons.append("价格>EMA21>EMA50多头")
+    elif ind.get("price_above_ema21"):
+        score += 14; reasons.append(f"价格>EMA21({ind['ema21']:.2f})")
     elif ma5 > ma20:
-        score += 14; reasons.append("短线偏多")
+        score += 8; reasons.append("短线偏多")
     elif ma5 > ma60:
-        score += 8
+        score += 4
+    # EMA21斜率向上额外加分
+    if ind.get("ema21_slope", 0) > 1.0:
+        score += 3; reasons.append(f"EMA21↑{ind['ema21_slope']:.1f}%")
 
     # 3. RSI 20分
     rsi = ind["rsi"]

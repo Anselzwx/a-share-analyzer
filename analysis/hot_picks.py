@@ -150,9 +150,24 @@ def _compute_indicators(code: str) -> dict:
         volume = df["volume"]
         high = df["high"]
 
+        # EMA（指数移动平均，近期权重更高）
+        ema8  = close.ewm(span=8,  adjust=False).mean().iloc[-1]
+        ema21 = close.ewm(span=21, adjust=False).mean().iloc[-1]
+        ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        # 保留MA5/MA20兼容旧评分
         ma5  = close.rolling(5).mean().iloc[-1]
         ma10 = close.rolling(10).mean().iloc[-1]
         ma20 = close.rolling(20, min_periods=10).mean().iloc[-1]
+
+        # EMA21斜率（今日 vs 5日前，判断EMA21是否向上）
+        ema21_series = close.ewm(span=21, adjust=False).mean()
+        ema21_5d_ago = ema21_series.iloc[-6] if len(ema21_series) >= 6 else ema21_series.iloc[-1]
+        ema21_slope = (ema21_series.iloc[-1] - ema21_5d_ago) / ema21_5d_ago * 100  # 斜率%
+
+        # 价格与EMA21关系
+        price_above_ema21 = close.iloc[-1] > ema21
+        # 多头排列：价格 > EMA21 > EMA50
+        full_bull = close.iloc[-1] > ema21 > ema50
 
         # RSI14
         delta = close.diff()
@@ -160,38 +175,39 @@ def _compute_indicators(code: str) -> dict:
         loss = (-delta.clip(upper=0)).rolling(14).mean()
         rsi = (100 - 100 / (1 + gain / loss.replace(0, 1e-9))).iloc[-1]
 
-        # RSI趋势（今日 vs 5日前，判断RSI是否加速上行）
+        # RSI趋势
         rsi_series = 100 - 100 / (1 + gain / loss.replace(0, 1e-9))
         rsi_5d_ago = rsi_series.iloc[-6] if len(rsi_series) >= 6 else rsi
-        rsi_momentum = rsi - rsi_5d_ago   # 正值表示RSI加速上行
+        rsi_momentum = rsi - rsi_5d_ago
 
         # 60日区间位
         h60 = close.rolling(60, min_periods=15).max().iloc[-1]
         l60 = close.rolling(60, min_periods=15).min().iloc[-1]
         range_pos = (close.iloc[-1] - l60) / (h60 - l60 + 1e-9) * 100
 
-        # 历史量比（昨日 vs 前5日均量）
+        # 历史量比
         vol5_avg = volume.rolling(5).mean().iloc[-2]
         vol_ratio_hist = volume.iloc[-1] / vol5_avg if vol5_avg > 0 else 1.0
 
-        # 近3日是否有过缩量回踩（涨停前常见蓄力形态）
+        # 近3日缩量回踩
         vol_3d_min = volume.iloc[-4:-1].min()
         vol_prev_high = volume.iloc[-10:-4].max() if len(volume) >= 10 else volume.iloc[-1]
         has_pullback_consolidation = (vol_3d_min < vol_prev_high * 0.6)
 
-        # 近5日涨幅（动能）
+        # 近5日涨幅
         gain_5d = (close.iloc[-1] / close.iloc[-6] - 1) * 100 if len(df) >= 6 else 0
 
-        # 今日是否接近前高突破（突破前高往往加速）
+        # 突破前高
         recent_high = high.iloc[-20:-1].max() if len(df) >= 20 else high.max()
         near_breakout = close.iloc[-1] >= recent_high * 0.97
 
         return {
-            "ma5": ma5,
-            "ma10": ma10,
-            "ma20": ma20,
-            "rsi": rsi,
-            "rsi_momentum": rsi_momentum,
+            "ma5": ma5, "ma10": ma10, "ma20": ma20,
+            "ema8": ema8, "ema21": ema21, "ema50": ema50,
+            "ema21_slope": ema21_slope,
+            "price_above_ema21": price_above_ema21,
+            "full_bull": full_bull,
+            "rsi": rsi, "rsi_momentum": rsi_momentum,
             "range_pos": range_pos,
             "vol_ratio_hist": vol_ratio_hist,
             "has_pullback": has_pullback_consolidation,
@@ -257,12 +273,24 @@ def _score_zt_potential(row: pd.Series, ind: dict) -> tuple:
         score += 0
         reasons.append(f"量比{vr:.1f}x缩量⚠")
 
-    # 4. 均线多头 + RSI上行动能
-    if ind["ma5"] > ind["ma10"] > ind["ma20"]:
+    # 4. EMA趋势 + RSI上行动能
+    # EMA多头排列：价格 > EMA21 > EMA50（最强信号）
+    if ind["full_bull"]:
         score += 12
-        reasons.append("均线多头")
-    elif ind["ma5"] > ind["ma20"]:
+        reasons.append("价格>EMA21>EMA50多头")
+    elif ind["price_above_ema21"]:
         score += 8
+        reasons.append("价格>EMA21")
+    elif ind["ma5"] > ind["ma20"]:
+        score += 4
+
+    # EMA21斜率向上加分
+    if ind["ema21_slope"] > 1.0:
+        score += 4
+        reasons.append(f"EMA21↑斜率{ind['ema21_slope']:.1f}%")
+    elif ind["ema21_slope"] < -0.5:
+        score -= 3
+        reasons.append("EMA21↓走弱⚠")
 
     rsi = ind["rsi"]
     rsi_mom = ind["rsi_momentum"]
