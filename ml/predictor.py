@@ -63,9 +63,25 @@ def predict_one(code: str, xgb_model, lr_model, sector_flow_cache: dict = None) 
 
 def predict_batch(codes: list, max_workers: int = 8) -> pd.DataFrame:
     """批量预测，多线程并发拉行情，返回按涨停概率降序排列的 DataFrame。"""
+    from ml.train import run_training_pipeline
     xgb_model, lr_model, meta = load_models()
     if xgb_model is None:
-        raise RuntimeError("模型未训练，请先运行 ml/train.py")
+        raise RuntimeError("模型未训练，请先在页面点击「开始训练模型」")
+
+    # 特征数不匹配（模型用旧特征训练）→ 自动重训
+    expected = xgb_model.n_features_in_
+    actual = len(FEATURE_COLS)
+    if expected != actual:
+        import os
+        from pathlib import Path
+        model_dir = Path(__file__).parent / "models"
+        for f in ["xgb_model.pkl", "lr_model.pkl", "meta.pkl", "dataset.parquet"]:
+            p = model_dir / f
+            if p.exists():
+                p.unlink()
+        xgb_model, lr_model, meta = run_training_pipeline(force_retrain=True)
+        if xgb_model is None:
+            raise RuntimeError("模型重训失败")
 
     # 预加载板块流向，所有线程共享（避免重复读文件）
     sector_flow_cache = {}
