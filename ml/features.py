@@ -11,15 +11,17 @@
       波动类   ATR14、Bollinger带宽、日内振幅
       形态类   区间位置、与前高距离、连涨天数
       相对类   相对MA5偏离度、相对MA20偏离度
+      板块类   所在板块当日净流入、连续净流入天数、板块涨跌幅
 """
 
 import pandas as pd
 import numpy as np
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+def build_features(df: pd.DataFrame, sector_flow: pd.DataFrame = None) -> pd.DataFrame:
     """
     输入：单只股票完整日线（含 date,open,high,low,close,volume,turnover）
+          sector_flow（可选）：该股所在板块的历史资金流向，含 date/main_net_inflow/pct_change 列
     输出：含特征列 + label 的 DataFrame，去掉 NaN 行
     label = 1 表示次日涨幅 >= 9.5%（涨停）
     """
@@ -127,6 +129,45 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # 下影线比例（下影线长=有支撑）
     df["lower_shadow"] = (c.clip(lower=o) - lo) / (c + 1e-9)
 
+    # ── 板块资金流向特征 ─────────────────────────────────────
+    # 如果传入了板块历史流向数据，按日期 merge 进来
+    if sector_flow is not None and not sector_flow.empty:
+        sf = sector_flow.copy()
+        sf["date"] = pd.to_datetime(sf["date"])
+        sf = sf.sort_values("date").reset_index(drop=True)
+
+        # 板块当日净流入（亿元）
+        sf["sector_net_inflow"] = sf["main_net_inflow"] / 1e8
+        # 板块当日涨跌幅
+        sf["sector_pct"] = pd.to_numeric(sf.get("pct_change", 0), errors="coerce").fillna(0)
+        # 板块连续净流入天数（正=连续流入，负=连续流出）
+        inflow_sign = (sf["sector_net_inflow"] > 0).astype(int).replace(0, -1)
+        streak = []
+        cur = 0
+        for s in inflow_sign:
+            if s > 0:
+                cur = max(cur, 0) + 1
+            else:
+                cur = min(cur, 0) - 1
+            streak.append(cur)
+        sf["sector_inflow_streak"] = streak
+        # 5日板块净流入均值
+        sf["sector_inflow_5d"] = sf["sector_net_inflow"].rolling(5, min_periods=1).mean()
+
+        sf = sf[["date", "sector_net_inflow", "sector_pct",
+                 "sector_inflow_streak", "sector_inflow_5d"]]
+        df = df.merge(sf, on="date", how="left")
+    else:
+        df["sector_net_inflow"] = 0.0
+        df["sector_pct"] = 0.0
+        df["sector_inflow_streak"] = 0
+        df["sector_inflow_5d"] = 0.0
+
+    df["sector_net_inflow"] = df["sector_net_inflow"].fillna(0.0)
+    df["sector_pct"] = df["sector_pct"].fillna(0.0)
+    df["sector_inflow_streak"] = df["sector_inflow_streak"].fillna(0)
+    df["sector_inflow_5d"] = df["sector_inflow_5d"].fillna(0.0)
+
     # ── 标签：次日是否涨停 ──────────────────────────────────
     df["next_pct"] = c.shift(-1) / c - 1   # 次日涨幅（用复权价）
     df["label"] = (df["next_pct"] >= 0.095).astype(int)
@@ -144,6 +185,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         "atr14", "bb_width", "bb_pct", "intraday_range",
         "range_pos_60", "dist_to_high20",
         "upper_shadow", "lower_shadow",
+        "sector_net_inflow", "sector_pct",
+        "sector_inflow_streak", "sector_inflow_5d",
         "label",
     ]
     df = df[["date"] + feature_cols].dropna()
@@ -164,4 +207,6 @@ FEATURE_COLS = [
     "atr14", "bb_width", "bb_pct", "intraday_range",
     "range_pos_60", "dist_to_high20",
     "upper_shadow", "lower_shadow",
+    "sector_net_inflow", "sector_pct",
+    "sector_inflow_streak", "sector_inflow_5d",
 ]

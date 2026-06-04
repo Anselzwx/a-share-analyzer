@@ -39,6 +39,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from xgboost import XGBClassifier
 
 from ml.features import build_features, FEATURE_COLS
+from data.cache import load_sector_flow_history
 
 MODEL_DIR = Path(__file__).parent.parent / "ml" / "models"
 MODEL_DIR.mkdir(exist_ok=True)
@@ -134,6 +135,38 @@ TRAIN_STOCK_POOL = [
 # 去重
 TRAIN_STOCK_POOL = list(dict.fromkeys(TRAIN_STOCK_POOL))
 
+# 股票代码 → 所在板块名称（与 sector_flow_history.csv 的 sector 列对应）
+# 只需覆盖训练池里的主要股票，未覆盖的用 None（不拼板块特征）
+STOCK_SECTOR_MAP = {
+    # 电力
+    "600795": "电力设备", "600780": "电力设备", "000027": "电力设备",
+    "600023": "电力设备", "600578": "电力设备", "601991": "电力设备",
+    "600021": "电力设备", "600863": "电力设备", "000899": "电力设备",
+    "600452": "电力设备",
+    # 半导体
+    "688981": "半导体", "600703": "半导体", "002475": "半导体",
+    "688012": "半导体", "603501": "半导体", "688041": "半导体",
+    "688005": "半导体", "002049": "半导体", "688008": "半导体",
+    "603986": "半导体", "600198": "半导体",
+    # 光伏/新能源
+    "300750": "光伏设备", "601012": "光伏设备", "600481": "光伏设备",
+    "300274": "光伏设备", "002594": "新能源车",
+    # 医药
+    "600276": "化学制药", "300760": "医疗器械", "603259": "化学制药",
+    # 白酒/消费
+    "600519": "白酒", "000858": "白酒", "002304": "白酒",
+    # 银行
+    "600036": "银行", "601318": "保险", "601166": "银行",
+    "000001": "银行", "600016": "银行",
+    # 煤炭
+    "601898": "煤炭开采加工", "601088": "煤炭开采加工",
+    "600188": "煤炭开采加工", "000983": "煤炭开采加工",
+    # 钢铁
+    "600019": "普钢", "000898": "普钢", "601899": "有色金属",
+    # 通信
+    "600050": "通信设备", "000063": "通信设备", "002281": "通信设备",
+}
+
 
 def _fetch_one(code: str, start: str = "20200101") -> pd.DataFrame:
     """拉单只股票历史日线，失败返回空 DataFrame。"""
@@ -167,6 +200,15 @@ def build_dataset(
     if stock_pool is None:
         stock_pool = TRAIN_STOCK_POOL
 
+    # 预加载所有板块历史流向（一次性读文件，避免循环里重复IO）
+    _sector_cache = {}
+
+    def _get_sector_flow(sector_name: str) -> pd.DataFrame:
+        if sector_name not in _sector_cache:
+            df_sf = load_sector_flow_history([sector_name], is_concept=False)
+            _sector_cache[sector_name] = df_sf
+        return _sector_cache[sector_name]
+
     frames = []
     total = len(stock_pool)
     for i, code in enumerate(stock_pool):
@@ -174,7 +216,10 @@ def build_dataset(
         raw = _fetch_one(code, start)
         if raw.empty or len(raw) < 100:
             continue
-        feat = build_features(raw)
+        # 拼入板块资金流向（有映射则拼，没有则传 None）
+        sector_name = STOCK_SECTOR_MAP.get(code)
+        sector_flow = _get_sector_flow(sector_name) if sector_name else None
+        feat = build_features(raw, sector_flow=sector_flow)
         feat["code"] = code
         frames.append(feat)
 

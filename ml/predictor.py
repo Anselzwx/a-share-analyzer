@@ -11,7 +11,8 @@ import numpy as np
 import akshare as ak
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ml.features import build_features, FEATURE_COLS
-from ml.train import load_models
+from ml.train import load_models, STOCK_SECTOR_MAP
+from data.cache import load_sector_flow_history
 
 
 def _fetch_recent(code: str, days: int = 120) -> pd.DataFrame:
@@ -24,12 +25,25 @@ def _fetch_recent(code: str, days: int = 120) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def predict_one(code: str, xgb_model, lr_model) -> dict:
+def predict_one(code: str, xgb_model, lr_model, sector_flow_cache: dict = None) -> dict:
     df = _fetch_recent(code)
     if df.empty or len(df) < 30:
         return None
 
-    tmp = build_features(df)
+    # 拼入板块资金流向
+    sector_flow = None
+    sector_name = STOCK_SECTOR_MAP.get(code)
+    if sector_name:
+        if sector_flow_cache is not None:
+            if sector_name not in sector_flow_cache:
+                sector_flow_cache[sector_name] = load_sector_flow_history(
+                    [sector_name], is_concept=False
+                )
+            sector_flow = sector_flow_cache[sector_name]
+        else:
+            sector_flow = load_sector_flow_history([sector_name], is_concept=False)
+
+    tmp = build_features(df, sector_flow=sector_flow)
     if tmp.empty:
         return None
 
@@ -53,10 +67,15 @@ def predict_batch(codes: list, max_workers: int = 8) -> pd.DataFrame:
     if xgb_model is None:
         raise RuntimeError("模型未训练，请先运行 ml/train.py")
 
+    # 预加载板块流向，所有线程共享（避免重复读文件）
+    sector_flow_cache = {}
+
     records = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(predict_one, code, xgb_model, lr_model): code
-                   for code in codes}
+        futures = {
+            executor.submit(predict_one, code, xgb_model, lr_model, sector_flow_cache): code
+            for code in codes
+        }
         for future in as_completed(futures):
             res = future.result()
             if res:

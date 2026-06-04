@@ -16,6 +16,7 @@ from analysis.market_sentiment import get_sentiment_summary, get_northbound
 from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST
 from analysis.hot_picks import pick_top3
 from analysis.sector_analysis import get_sector_top50, pick_sector_top5
+from analysis.short_term import pick_short_term_top5
 from ml.predictor import predict_batch
 from ml.train import load_models
 from ui.charts import (
@@ -93,9 +94,9 @@ col4.metric("全市场主力合计", f"{total_inflow:.1f} 亿")
 st.divider()
 
 # ── 主 Tab ────────────────────────────────────────────────────
-tab_today, tab_hist, tab_watch, tab_picks, tab_power, tab_semi, tab_optical, tab_space, tab_auto, tab_ml = st.tabs(
+tab_today, tab_hist, tab_watch, tab_picks, tab_short, tab_power, tab_semi, tab_optical, tab_space, tab_auto, tab_ml = st.tabs(
     ["今日资金流向", "历史趋势对比", "自选股", "🔥 热门精选",
-     "⚡ 电力板块", "🔬 半导体板块", "💡 光模块", "🚀 商业航天", "🚗 智能驾驶",
+     "⚡ 超短线", "⚡ 电力板块", "🔬 半导体板块", "💡 光模块", "🚀 商业航天", "🚗 智能驾驶",
      "🤖 ML 涨停预测"]
 )
 
@@ -328,7 +329,89 @@ with tab_picks:
         st.warning("暂无数据，请稍后重试或点击「重新分析」")
 
 # ════════════════════════════════════════════════════════════
-# Tab 5：电力板块
+# Tab 5：超短线（今买明卖）
+# ════════════════════════════════════════════════════════════
+with tab_short:
+    st.subheader("⚡ 超短线精选：今日买入，明日卖出")
+    st.caption(
+        "**仅限主板**（沪市60xxxx / 深市00xxxx），不含创业板和科创板。"
+        "筛选逻辑：今日放量上涨、EMA21向上、RSI健康、MACD/KDJ金叉优先，"
+        "隔夜持仓风险低。每15分钟刷新。"
+    )
+
+    st.info(
+        "**策略说明**：\n"
+        "- 买入时机：尾盘（14:45 后）确认量能持续，分批建仓\n"
+        "- 卖出时机：次日开盘高开 1-2% 即可出，或早盘9:30-10:00 最强势时卖\n"
+        "- 止损：次日跌破今日开盘价立即止损，不拖\n"
+        "- 仓位：单只不超过总仓位 20%，最多同时持3只"
+    )
+
+    @st.cache_data(ttl=900, show_spinner="正在筛选超短线候选股（约30-60秒）...")
+    def load_short_picks():
+        return pick_short_term_top5(max_candidates=80)
+
+    if st.button("🔄 重新分析", key="refresh_short"):
+        st.cache_data.clear()
+        st.rerun()
+
+    with st.spinner("正在从主板上涨股中筛选超短线机会..."):
+        try:
+            df_short = load_short_picks()
+            short_ok = not df_short.empty
+        except Exception as e:
+            st.error(f"超短线分析失败：{e}")
+            short_ok = False
+
+    if short_ok:
+        rank_icons = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        for i, (_, row) in enumerate(df_short.iterrows()):
+            with st.container():
+                pct_str = f"+{row['今日涨跌幅%']:.2f}%" if row['今日涨跌幅%'] >= 0 else f"{row['今日涨跌幅%']:.2f}%"
+                col_title, col_score = st.columns([4, 1])
+                with col_title:
+                    st.markdown(f"### {rank_icons[i]} {row['name']}（{row['code']}）")
+                with col_score:
+                    st.metric("综合得分", f"{row['综合得分']} / 100")
+
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("最新价", f"¥{row['最新价']:.2f}", pct_str)
+                m2.metric("量比", f"{row['量比']}x")
+                m3.metric("RSI14", f"{row['RSI14']}")
+                m4.metric("60日区间位", f"{row['60日区间位%']}%")
+
+                st.markdown(f"""
+<small>
+EMA21={row['EMA21']} 斜率{row['EMA21斜率%']:+.1f}% ｜
+KDJ({row['KDJ_K']:.0f}/{row['KDJ_D']:.0f}/{row['KDJ_J']:.0f}) ｜
+MACD: {row['MACD金叉']} ｜ KDJ金叉: {row['KDJ金叉']} ｜
+5日涨幅: {row['5日涨幅%']:.1f}%
+</small>
+""", unsafe_allow_html=True)
+
+                st.success(f"**买入理由**：{row['买入理由']}")
+                if row['风险提示'] != "无明显风险":
+                    st.warning(f"**风险提示**：{row['风险提示']}")
+                st.divider()
+
+        with st.expander("查看完整评分明细"):
+            show_cols = ["name", "code", "最新价", "今日涨跌幅%", "量比",
+                         "RSI14", "EMA21斜率%", "60日区间位%", "5日涨幅%",
+                         "MACD金叉", "KDJ金叉", "近3日最大跌%", "综合得分", "买入理由", "风险提示"]
+            short_show = df_short[show_cols].copy()
+            short_show.index = [f"#{i+1}" for i in range(len(short_show))]
+            st.dataframe(short_show, use_container_width=True)
+
+        st.warning(
+            "⚠️ 超短线风险极高，隔夜持仓受消息面影响大。"
+            "严格止损，跌破今日开盘价立即卖出，不要抱侥幸心理。"
+        )
+    else:
+        st.warning("暂无合适的超短线候选，当前市场可能偏弱或数据获取失败。请稍后重试。")
+
+
+# ════════════════════════════════════════════════════════════
+# Tab 6：电力板块
 # ════════════════════════════════════════════════════════════
 with tab_power:
     st.subheader("⚡ 电力板块 Top50 行情")
