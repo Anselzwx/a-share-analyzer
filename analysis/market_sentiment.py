@@ -45,24 +45,21 @@ def compute_sentiment_score(limit_up_count: int, limit_down_count: int) -> dict:
 
 
 def _fetch_limit_down_count() -> int:
-    """获取今日跌停股数量。"""
+    """获取今日跌停股数量，带超时保护。"""
     import akshare as ak
-    from datetime import datetime
     try:
         df = ak.stock_zt_pool_dtgc_em(date=datetime.now().strftime("%Y%m%d"))
         return len(df)
     except Exception:
         pass
-    # 备用：新浪涨跌停统计
     try:
-        import requests
+        import requests, json
         r = requests.get(
             "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php"
             "/Market_Center.getHQNodeDataSimple?node=dt_szsh&symbol=&_s_r_a=init",
             headers={"Referer": "http://finance.sina.com.cn"},
-            timeout=6,
+            timeout=5,
         )
-        import json
         data = json.loads(r.text)
         return len(data) if isinstance(data, list) else 0
     except Exception:
@@ -70,12 +67,31 @@ def _fetch_limit_down_count() -> int:
 
 
 def get_sentiment_summary() -> dict:
-    try:
-        lu_df = get_limit_up()
-        limit_up_count = len(lu_df)
-    except Exception:
-        limit_up_count = 0
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
-    limit_down_count = _fetch_limit_down_count()
+    def _get_limit_up():
+        try:
+            return len(get_limit_up())
+        except Exception:
+            return 0
+
+    def _get_limit_down():
+        try:
+            return _fetch_limit_down_count()
+        except Exception:
+            return 0
+
+    # 两个接口并发，最多等8秒，超时直接用0
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fu = ex.submit(_get_limit_up)
+        fd = ex.submit(_get_limit_down)
+        try:
+            limit_up_count = fu.result(timeout=8)
+        except Exception:
+            limit_up_count = 0
+        try:
+            limit_down_count = fd.result(timeout=8)
+        except Exception:
+            limit_down_count = 0
 
     return compute_sentiment_score(limit_up_count, limit_down_count)
