@@ -47,15 +47,15 @@ with st.sidebar:
 use_concept = sector_type == "概念板块"
 
 # ── 缓存数据加载 ──────────────────────────────────────────────
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=600)
 def load_sector(concept: bool):
     return get_sector_flow(use_concept=concept)
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=600)
 def load_sentiment():
     return get_sentiment_summary()
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=600)
 def load_northbound():
     try:
         return get_northbound()

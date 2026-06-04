@@ -11,7 +11,7 @@ from data.fetcher import fetch_sector_flow, fetch_concept_flow, fetch_multi_sect
 def get_sector_flow(use_concept: bool = False) -> pd.DataFrame:
     key = f"concept_flow_{cache_date()}" if use_concept else f"sector_flow_{cache_date()}"
     fetch_fn = fetch_concept_flow if use_concept else fetch_sector_flow
-    df = get_or_fetch(key, fetch_fn, max_age_minutes=30)
+    df = get_or_fetch(key, fetch_fn, max_age_minutes=10)
 
     numeric_cols = ["main_net_inflow", "main_net_inflow_pct", "super_large_net",
                     "large_net", "medium_net", "small_net", "pct_change"]
