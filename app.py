@@ -714,9 +714,11 @@ with tab_ml:
                     df_pred_show["XGB%"] = (df_pred_show["xgb_prob"] * 100).round(1)
                     df_pred_show["LR%"] = (df_pred_show["lr_prob"] * 100).round(1)
 
+                    df_pred_show["code"] = df_pred_show["code"].astype(str).str.zfill(6)
+                    # 按概率升序排列，最高的显示在顶部
+                    df_pred_show = df_pred_show.sort_values("涨停概率%", ascending=True)
                     colors = ["#d62728" if p >= 20 else "#ff7f0e" if p >= 10 else "#aec7e8"
                               for p in df_pred_show["涨停概率%"]]
-                    df_pred_show["code"] = df_pred_show["code"].astype(str).str.zfill(6)
                     fig_pred = go.Figure(go.Bar(
                         x=df_pred_show["涨停概率%"],
                         y=df_pred_show["code"],
@@ -729,10 +731,11 @@ with tab_ml:
                                        annotation_text="20%关注线")
                     fig_pred.update_layout(
                         title="明日涨停集成概率",
-                        height=max(300, len(codes_input) * 45),
+                        height=max(400, len(codes_input) * 60),
                         xaxis_title="涨停概率%",
-                        xaxis_range=[0, max(df_pred_show["涨停概率%"].max() * 1.3, 30)],
-                        margin=dict(t=50, l=80, r=80, b=30),
+                        xaxis_range=[0, min(100, max(df_pred_show["涨停概率%"].max() * 1.2, 35))],
+                        yaxis=dict(type="category", tickfont=dict(size=13)),
+                        margin=dict(t=50, l=100, r=100, b=30),
                     )
                     st.plotly_chart(fig_pred, use_container_width=True)
 
