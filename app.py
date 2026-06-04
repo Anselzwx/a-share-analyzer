@@ -716,6 +716,7 @@ with tab_ml:
 
                     colors = ["#d62728" if p >= 20 else "#ff7f0e" if p >= 10 else "#aec7e8"
                               for p in df_pred_show["涨停概率%"]]
+                    df_pred_show["code"] = df_pred_show["code"].astype(str).str.zfill(6)
                     fig_pred = go.Figure(go.Bar(
                         x=df_pred_show["涨停概率%"],
                         y=df_pred_show["code"],
