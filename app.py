@@ -702,6 +702,25 @@ with tab_ml:
                     st.error(f"训练失败：{e}")
         st.stop()
 
+    # 强制重训入口（特征更新后需要用）
+    col_retrain, _ = st.columns([1, 3])
+    with col_retrain:
+        if st.button("🔁 强制重新训练模型", key="force_retrain"):
+            from pathlib import Path
+            model_dir = Path("ml/models")
+            for f in ["xgb_model.pkl", "lr_model.pkl", "meta.pkl", "dataset.parquet"]:
+                p = model_dir / f
+                if p.exists():
+                    p.unlink()
+            with st.spinner("正在重新训练（约5-8分钟）..."):
+                try:
+                    from ml.train import run_training_pipeline
+                    run_training_pipeline(force_retrain=True)
+                    st.success("训练完成！")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"训练失败：{e}")
+
     # 模型性能展示
     with st.expander("📊 模型性能报告", expanded=False):
         mc1, mc2, mc3, mc4 = st.columns(4)
