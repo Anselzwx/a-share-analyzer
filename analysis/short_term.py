@@ -33,10 +33,10 @@ def _is_main_board(code: str) -> bool:
 
 def _fetch_main_board_gainers() -> pd.DataFrame:
     """
-    获取今日主板上涨股列表（涨幅2-8%区间），
-    数据来源：东财接口，失败则用新浪备用。
+    获取今日主板上涨股列表（涨幅1.5-9.4%区间）。
+    接口优先级：东财push2 → 新浪涨幅榜 → akshare同花顺
     """
-    # 东财接口：主板（m:1+t:2 沪市主板 + m:0+t:6 深市主板 + m:0+t:80）
+    # 接口1：东财push2（Cloud可能被屏蔽）
     try:
         url = (
             "https://push2.eastmoney.com/api/qt/clist/get"
@@ -44,36 +44,78 @@ def _fetch_main_board_gainers() -> pd.DataFrame:
             "&fs=m:1+t:2,m:0+t:6,m:0+t:80"
             "&fields=f2,f3,f4,f5,f6,f12,f14,f62,f115"
         )
-        r = requests.get(url, timeout=10,
+        r = requests.get(url, timeout=8,
                          headers={"User-Agent": "Mozilla/5.0",
                                   "Referer": "https://quote.eastmoney.com"})
         items = r.json()["data"]["diff"]
-        rows = []
-        for item in items:
-            code = str(item.get("f12", "")).zfill(6)
-            if not _is_main_board(code):
-                continue
-            pct   = item.get("f3", None)
-            price = item.get("f2", None)
-            name  = item.get("f14", "")
-            vol   = item.get("f5", None)
-            amount = item.get("f6", None)
-            pe    = item.get("f115", None)
-            rows.append({
-                "code": code, "name": name,
-                "price": price, "pct": pct,
-                "volume": vol, "amount": amount, "pe": pe,
-            })
-        df = pd.DataFrame(rows)
-        for col in ["price", "pct", "volume", "amount", "pe"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        df = df[df["pct"].between(1.5, 9.4)]
-        df = df[~df["name"].str.contains("ST|退市|N |C ", na=False)]
-        return df.reset_index(drop=True)
+        if items:
+            rows = []
+            for item in items:
+                code = str(item.get("f12", "")).zfill(6)
+                if not _is_main_board(code):
+                    continue
+                rows.append({
+                    "code": code,
+                    "name": item.get("f14", ""),
+                    "price": item.get("f2", None),
+                    "pct": item.get("f3", None),
+                    "volume": item.get("f5", None),
+                    "amount": item.get("f6", None),
+                    "pe": item.get("f115", None),
+                })
+            df = pd.DataFrame(rows)
+            for col in ["price", "pct", "volume", "amount", "pe"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df[df["pct"].between(1.5, 9.4)]
+            df = df[~df["name"].str.contains("ST|退市|N |C ", na=False)]
+            if not df.empty:
+                return df.reset_index(drop=True)
     except Exception:
         pass
 
-    # 备用：akshare沪深全市场
+    # 接口2：新浪财经涨幅榜（沪深主板，Cloud基本可用）
+    try:
+        rows = []
+        for node in ["hs_a", "sh_a", "sz_a"]:
+            url2 = (
+                f"http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php"
+                f"/Market_Center.getHQNodeData?page=1&num=100&sort=changepercent"
+                f"&asc=0&node={node}&symbol=&_s_r_a=page"
+            )
+            r2 = requests.get(url2, timeout=8,
+                               headers={"Referer": "http://finance.sina.com.cn",
+                                        "User-Agent": "Mozilla/5.0"})
+            import json as _json
+            data = _json.loads(r2.text)
+            if not isinstance(data, list):
+                continue
+            for item in data:
+                code = str(item.get("code", "")).zfill(6)
+                if not _is_main_board(code):
+                    continue
+                try:
+                    pct = float(item.get("changepercent", 0))
+                    price = float(item.get("trade", 0))
+                    amount = float(item.get("amount", 0))
+                    name = item.get("name", "")
+                except Exception:
+                    continue
+                if not 1.5 <= pct <= 9.4:
+                    continue
+                if "ST" in name or "退市" in name:
+                    continue
+                rows.append({
+                    "code": code, "name": name,
+                    "price": price, "pct": pct,
+                    "volume": None, "amount": amount, "pe": None,
+                })
+        if rows:
+            df = pd.DataFrame(rows).drop_duplicates(subset="code")
+            return df.reset_index(drop=True)
+    except Exception:
+        pass
+
+    # 接口3：akshare 同花顺涨幅榜
     try:
         df = ak.stock_zh_a_spot_em()
         df = df.rename(columns={
@@ -88,11 +130,12 @@ def _fetch_main_board_gainers() -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df[df["pct"].between(1.5, 9.4)]
         df = df[~df["name"].str.contains("ST|退市", na=False)]
-        return df[["code", "name", "price", "pct", "volume", "amount", "pe"]].reset_index(drop=True)
+        if not df.empty:
+            return df[["code", "name", "price", "pct", "volume", "amount", "pe"]].reset_index(drop=True)
     except Exception:
         pass
 
-    raise RuntimeError("主板行情获取失败")
+    raise RuntimeError("主板行情获取失败：所有接口均不可用")
 
 
 def _compute_short_indicators(code: str) -> dict:
