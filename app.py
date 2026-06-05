@@ -13,7 +13,7 @@ from analysis.sector_flow import (
     compute_cumulative_inflow, rolling_inflow_strength,
 )
 from analysis.market_sentiment import get_sentiment_summary, get_northbound
-from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST
+from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST, WATCHLIST_COST
 from analysis.hot_picks import pick_top3
 from analysis.sector_analysis import get_sector_top50, pick_sector_top5
 from analysis.short_term import pick_short_term_top5
@@ -213,58 +213,112 @@ with tab_hist:
                 st.dataframe(summary, use_container_width=True)
 
 # ════════════════════════════════════════════════════════════
-# Tab 3：自选股
+# Tab 3：自选股（持仓监控）
 # ════════════════════════════════════════════════════════════
 with tab_watch:
-    @st.cache_data(ttl=900, show_spinner="正在拉取自选股历史数据...")
-    def load_watchlist(watchlist_key: str):
-        return get_all_watchlist_hist(start="20250101")
+    st.subheader("📋 持仓监控")
+    st.caption("实时盈亏 | 止损预警 | K线走势")
 
-    _watchlist_key = ",".join(sorted(WATCHLIST.keys())) + "_" + datetime.now().strftime("%Y%m%d")
+    @st.cache_data(ttl=600, show_spinner="正在拉取持仓数据...")
+    def load_watchlist(watchlist_key: str):
+        return get_all_watchlist_hist(start="20260101")
+
+    _watchlist_key = ",".join(sorted(WATCHLIST.keys())) + "_" + datetime.now().strftime("%Y%m%d%H")
     df_watch = load_watchlist(_watchlist_key)
 
     if df_watch.empty:
-        st.error("自选股数据获取失败")
+        st.error("持仓数据获取失败")
     else:
-        # 指标卡一行展示
         stats = compute_stock_stats(df_watch)
-        watchlist_summary_cards(stats)
+
+        # ── 持仓盈亏卡片 ──────────────────────────────────────
+        st.markdown("#### 实时盈亏")
+        cols = st.columns(len(WATCHLIST))
+        total_pnl_pct = []
+        for col, (name, code) in zip(cols, WATCHLIST.items()):
+            cost = WATCHLIST_COST.get(name)
+            row = stats[stats["name"] == name]
+            if row.empty or cost is None:
+                continue
+            now = row["最新价"].iloc[0]
+            pnl_pct = (now / cost - 1) * 100
+            total_pnl_pct.append(pnl_pct)
+            delta_str = f"{pnl_pct:+.2f}%"
+            color = "inverse" if pnl_pct >= 0 else "normal"
+            with col:
+                st.metric(
+                    label=f"{name}（{code}）",
+                    value=f"¥{now:.2f}",
+                    delta=delta_str,
+                    delta_color=color,
+                )
+                st.caption(f"成本 ¥{cost:.3f}")
+                # 止损预警
+                stop_loss = cost * 0.97
+                if now <= stop_loss:
+                    st.error(f"⚠️ 触发止损！止损价 {stop_loss:.2f}")
+                elif now <= cost * 0.98:
+                    st.warning(f"接近止损 {stop_loss:.2f}")
+
+        # 总盈亏摘要
+        if total_pnl_pct:
+            avg_pnl = sum(total_pnl_pct) / len(total_pnl_pct)
+            color = "🟢" if avg_pnl >= 0 else "🔴"
+            st.markdown(f"**{color} 持仓平均盈亏：{avg_pnl:+.2f}%**")
 
         st.divider()
 
-        # K线图：选股切换
+        # ── K线图 ─────────────────────────────────────────────
         name_list = list(WATCHLIST.keys())
-        selected_stock = st.radio("选择股票", name_list, horizontal=True)
+        selected_stock = st.radio("查看K线", name_list, horizontal=True)
         code = WATCHLIST[selected_stock]
+        cost = WATCHLIST_COST.get(selected_stock)
         df_one = df_watch[df_watch["code"] == code]
         fig_k = stock_kline(df_one, selected_stock)
+        # 加买入成本线
+        if cost:
+            fig_k.add_hline(
+                y=cost, line_dash="dash", line_color="yellow", line_width=1.5,
+                annotation_text=f"成本 {cost:.3f}", annotation_position="right",
+            )
+            fig_k.add_hline(
+                y=cost * 0.97, line_dash="dot", line_color="red", line_width=1,
+                annotation_text=f"止损 {cost*0.97:.2f}", annotation_position="right",
+            )
         st.plotly_chart(fig_k, use_container_width=True)
 
         st.divider()
 
-        # 四股收盘价归一化对比（基准=1）
-        st.subheader("相对表现对比（以首日收盘价归一）")
+        # ── 相对表现对比 ──────────────────────────────────────
+        st.subheader("相对买入成本表现对比")
         fig_norm = go.Figure()
         for name, grp in df_watch.groupby("name"):
             grp = grp.sort_values("date")
-            base = grp["close"].iloc[0]
+            cost = WATCHLIST_COST.get(name, grp["close"].iloc[0])
             fig_norm.add_trace(go.Scatter(
-                x=grp["date"], y=(grp["close"] / base),
+                x=grp["date"], y=((grp["close"] / cost - 1) * 100),
                 mode="lines", name=name,
-                hovertemplate=f"<b>{name}</b><br>%{{x|%Y-%m-%d}}<br>相对收益: %{{y:.3f}}<extra></extra>",
+                hovertemplate=f"<b>{name}</b><br>%{{x|%Y-%m-%d}}<br>相对成本: %{{y:+.2f}}%<extra></extra>",
             ))
-        fig_norm.add_hline(y=1, line_dash="dash", line_color="gray", line_width=1)
+        fig_norm.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1,
+                           annotation_text="成本线")
+        fig_norm.add_hline(y=-3, line_dash="dot", line_color="red", line_width=1,
+                           annotation_text="止损-3%")
         fig_norm.update_layout(
-            height=380, xaxis_title="日期", yaxis_title="归一化价格",
+            height=380, xaxis_title="日期", yaxis_title="相对成本涨跌幅%",
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(t=60, b=40),
         )
         st.plotly_chart(fig_norm, use_container_width=True)
 
-        # 明细数据
-        with st.expander("统计摘要"):
-            st.dataframe(stats.set_index("name"), use_container_width=True)
+        with st.expander("持仓明细"):
+            detail = stats.copy()
+            detail["买入成本"] = detail["name"].map(WATCHLIST_COST)
+            detail["盈亏%"] = ((detail["最新价"] / detail["买入成本"]) - 1) * 100
+            detail["盈亏%"] = detail["盈亏%"].round(2)
+            detail["止损价"] = (detail["买入成本"] * 0.97).round(3)
+            st.dataframe(detail.set_index("name"), use_container_width=True)
 
 # ════════════════════════════════════════════════════════════
 # Tab 4：热门精选
