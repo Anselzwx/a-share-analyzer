@@ -17,6 +17,12 @@ from datetime import datetime, date, timedelta
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_PATH = os.path.join(_THIS_DIR, "..", "cache", "picks_history.csv")
 
+INITIAL_CAPITAL = 100_000.0   # 启动资金 10万元
+MAX_POSITIONS   = 3           # 最多同时持仓数
+POS_MIN         = 10_000.0   # 单笔最低 1万
+POS_MAX         = 50_000.0   # 单笔最高 5万
+CAPITAL_PATH    = os.path.join(_THIS_DIR, "..", "cache", "capital.csv")
+
 _COLUMNS = [
     "date",            # 推荐日期 YYYY-MM-DD
     "source",          # 来源（如 "热门精选" / "超短线"）
@@ -25,8 +31,10 @@ _COLUMNS = [
     "price",           # 推荐时价格
     "score",           # 综合得分 / 涨停潜力分
     "sentiment_level", # 推荐时市场情绪等级（0-5）
+    "position",        # 本笔投入金额（元）
     "result_pct",      # 次日收益率 %（填充前为 NaN）
-    "win",             # 是否盈利（True/False，填充前为 NaN）
+    "pnl",             # 本笔盈亏（元，填充前为 NaN）
+    "win",             # 是否盈利（1.0/0.0，填充前为 NaN）
 ]
 
 
@@ -52,26 +60,81 @@ def _save_history(df: pd.DataFrame) -> None:
     df.to_csv(HISTORY_PATH, index=False, encoding="utf-8-sig")
 
 
+# ── 资金账户 ──────────────────────────────────────────────────
+
+def get_current_capital() -> float:
+    """读取当前可用资金（元）。首次调用返回启动资金。"""
+    if not os.path.exists(CAPITAL_PATH):
+        return INITIAL_CAPITAL
+    try:
+        df = pd.read_csv(CAPITAL_PATH)
+        return float(df["capital"].iloc[-1])
+    except Exception:
+        return INITIAL_CAPITAL
+
+
+def _append_capital(capital: float, note: str = "") -> None:
+    """追加一条资金快照。"""
+    os.makedirs(os.path.dirname(CAPITAL_PATH), exist_ok=True)
+    row = pd.DataFrame({"date": [date.today().isoformat()],
+                        "capital": [round(capital, 2)],
+                        "note": [note]})
+    if os.path.exists(CAPITAL_PATH):
+        row.to_csv(CAPITAL_PATH, mode="a", header=False, index=False, encoding="utf-8-sig")
+    else:
+        row.to_csv(CAPITAL_PATH, index=False, encoding="utf-8-sig")
+
+
+def get_capital_curve() -> pd.DataFrame:
+    """返回资金曲线 DataFrame: date, capital。"""
+    if not os.path.exists(CAPITAL_PATH):
+        return pd.DataFrame({"date": [date.today().isoformat()],
+                             "capital": [INITIAL_CAPITAL]})
+    try:
+        df = pd.read_csv(CAPITAL_PATH)
+        df["capital"] = pd.to_numeric(df["capital"], errors="coerce")
+        # 插入初始点
+        init_row = pd.DataFrame({"date": ["起始"], "capital": [INITIAL_CAPITAL]})
+        return pd.concat([init_row, df[["date", "capital"]]], ignore_index=True)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _calc_positions(scores: list, available: float) -> list:
+    """
+    按得分权重动态分配仓位。
+    scores: 得分列表（与推荐顺序对应）
+    available: 今日可用资金（已扣除已持仓）
+    返回每笔仓位金额列表（≤MAX_POSITIONS 只）。
+    """
+    n = min(len(scores), MAX_POSITIONS)
+    scores = [max(float(s), 1.0) for s in scores[:n]]
+    total_score = sum(scores)
+    positions = []
+    for s in scores:
+        raw = available * (s / total_score)
+        pos = round(min(max(raw, POS_MIN), POS_MAX), 0)
+        positions.append(pos)
+    # 确保总仓位不超过可用资金
+    total_pos = sum(positions)
+    if total_pos > available:
+        scale = available / total_pos
+        positions = [round(p * scale, 0) for p in positions]
+    return positions
+
+
+# ── 推荐存档 ─────────────────────────────────────────────────
+
 def save_picks(df: pd.DataFrame, source: str, sentiment_level: int = None) -> int:
     """
-    保存一批推荐到历史 CSV。
+    保存一批推荐到历史 CSV，并按得分动态分配仓位。
 
-    参数：
-        df      — 包含 name / code / price / score 列的 DataFrame
-        source  — 来源标签，如 "热门精选"、"超短线"
-
-    返回新增行数（去重后）。
-
-    列名兼容：
-        - name / 名称 / 股票名称
-        - code / 代码
-        - price / 最新价 / 推荐价
-        - score / 综合得分 / 涨停潜力分
+    列名兼容：name/名称, code/代码, price/最新价, score/综合得分/涨停潜力分
+    返回新增行数。
     """
     if df is None or df.empty:
         return 0
 
-    # 列名规范化
     col_map = {
         "名称": "name", "股票名称": "name",
         "代码": "code",
@@ -82,9 +145,17 @@ def save_picks(df: pd.DataFrame, source: str, sentiment_level: int = None) -> in
 
     missing = [c for c in ("name", "code", "price", "score") if c not in df.columns]
     if missing:
-        raise ValueError(f"save_picks: 缺少必要列 {missing}（传入列：{list(df.columns)}）")
+        raise ValueError(f"save_picks: 缺少必要列 {missing}")
 
     today_str = date.today().isoformat()
+
+    # 动态仓位分配
+    available = get_current_capital()
+    scores    = pd.to_numeric(df["score"], errors="coerce").fillna(50).tolist()
+    positions = _calc_positions(scores, available)
+    # 补齐长度（scores 可能多于 MAX_POSITIONS）
+    while len(positions) < len(df):
+        positions.append(0.0)
 
     new_rows = pd.DataFrame({
         "date":            today_str,
@@ -94,7 +165,9 @@ def save_picks(df: pd.DataFrame, source: str, sentiment_level: int = None) -> in
         "price":           pd.to_numeric(df["price"], errors="coerce").values,
         "score":           pd.to_numeric(df["score"], errors="coerce").values,
         "sentiment_level": sentiment_level if sentiment_level is not None else np.nan,
+        "position":        positions,
         "result_pct":      np.nan,
+        "pnl":             np.nan,
         "win":             np.nan,
     })
 
@@ -102,7 +175,6 @@ def save_picks(df: pd.DataFrame, source: str, sentiment_level: int = None) -> in
 
     # 合并后按 (date, code, source) 去重，保留最新的一条
     combined = pd.concat([history, new_rows], ignore_index=True)
-    before_len = len(combined)
     combined = combined.drop_duplicates(subset=["date", "code", "source"], keep="last")
     added = len(combined) - len(history)
 
@@ -175,6 +247,8 @@ def fill_results() -> int:
         return 0
 
     filled = 0
+    capital = get_current_capital()
+
     for idx, row in pending.iterrows():
         close = _get_next_trading_close(str(row["code"]), str(row["date"]))
         if close is None:
@@ -183,13 +257,24 @@ def fill_results() -> int:
         if price <= 0:
             continue
         pct = round((close - price) / price * 100, 2)
+
+        # 止损触发：-3% 按实际止损价计算
+        effective_pct = max(pct, -3.0)
+
+        position = float(row.get("position", 0) or 0)
+        pnl = round(position * effective_pct / 100, 2)
+
         history.at[idx, "result_pct"] = pct
-        # Cast to float (1.0 / 0.0) so it fits the NaN-initialised float column
-        history.at[idx, "win"] = float(pct > 0)
+        history.at[idx, "pnl"]        = pnl
+        history.at[idx, "win"]        = float(pct > 0)
+
+        # 更新资金：归还本金 + 盈亏
+        capital = round(capital + pnl, 2)
         filled += 1
 
     if filled > 0:
         _save_history(history)
+        _append_capital(capital, note=f"结算{filled}笔")
 
     return filled
 

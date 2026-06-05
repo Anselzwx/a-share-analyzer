@@ -807,11 +807,53 @@ with tab_picks:
         sharpe     = get_sharpe()
         max_dd     = get_max_drawdown()
         sent_wr    = get_sentiment_winrate()
+        from analysis.tracker import get_current_capital, get_capital_curve, INITIAL_CAPITAL
+        cur_capital  = get_current_capital()
+        cap_curve_df = get_capital_curve()
     except Exception:
         stats, hist_df, curve_df = {}, pd.DataFrame(), pd.DataFrame()
         sharpe, max_dd, sent_wr = 0.0, 0.0, pd.DataFrame()
+        cur_capital, cap_curve_df = 100_000.0, pd.DataFrame()
+        INITIAL_CAPITAL = 100_000.0
 
     has_data = stats.get("total_picks", 0) > 0
+
+    # ── 资金账户概览（始终显示）────────────────────────────
+    total_pnl   = cur_capital - INITIAL_CAPITAL
+    total_pnl_r = total_pnl / INITIAL_CAPITAL * 100
+    pnl_color   = "#00d4aa" if total_pnl >= 0 else "#ff4d6d"
+    fa1, fa2, fa3, fa4 = st.columns(4)
+    fa1.metric("启动资金",   f"¥{INITIAL_CAPITAL/1e4:.0f}万")
+    fa2.metric("当前资金",   f"¥{cur_capital/1e4:.2f}万",
+               delta=f"{total_pnl_r:+.2f}%")
+    fa3.metric("累计盈亏",   f"¥{total_pnl:+,.0f}")
+    fa4.metric("最大回撤",   f"{max_dd:.2f}%")
+
+    # 资金曲线
+    if not cap_curve_df.empty and len(cap_curve_df) > 1:
+        fig_cap = go.Figure()
+        fig_cap.add_trace(go.Scatter(
+            x=cap_curve_df["date"], y=cap_curve_df["capital"],
+            mode="lines+markers", name="资金",
+            line=dict(color="#00d4aa", width=2),
+            marker=dict(size=4),
+            fill="tozeroy", fillcolor="rgba(0,212,170,0.05)",
+        ))
+        fig_cap.add_hline(y=INITIAL_CAPITAL, line_dash="dot",
+                          line_color="#3a3a5a", line_width=1,
+                          annotation_text="启动资金 10万",
+                          annotation_font_color="#3a3a5a",
+                          annotation_font_size=10)
+        fig_cap.update_layout(
+            height=180, margin=dict(l=0, r=0, t=10, b=0),
+            paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f",
+            font=dict(color="#5a5a7a", size=10),
+            xaxis=dict(gridcolor="#1e1e2e"),
+            yaxis=dict(gridcolor="#1e1e2e", tickprefix="¥",
+                       tickformat=",.0f"),
+            showlegend=False,
+        )
+        st.plotly_chart(fig_cap, use_container_width=True)
 
     if has_data:
         # ── 核心指标一行 ─────────────────────────────────────

@@ -393,12 +393,21 @@ def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
     if not records:
         return pd.DataFrame()
 
-    df_result = (
-        pd.DataFrame(records)
-        .sort_values("涨停潜力分", ascending=False)
-        .head(5)
-        .reset_index(drop=True)
-    )
+    df_all = pd.DataFrame(records).sort_values("涨停潜力分", ascending=False)
+
+    # 板块分散：同一板块只保留得分最高1只
+    try:
+        from ml.train import STOCK_SECTOR_MAP
+        df_all["_sector"] = df_all["code"].map(STOCK_SECTOR_MAP).fillna(df_all["code"])
+    except Exception:
+        df_all["_sector"] = df_all["code"]
+
+    df_result = (df_all
+                 .drop_duplicates(subset="_sector", keep="first")
+                 .head(5)
+                 .drop(columns=["_sector"])
+                 .reset_index(drop=True))
+
     save(cache_key, df_result)
     return df_result
 
