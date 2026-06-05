@@ -1202,49 +1202,147 @@ with tab_short:
             with card_cols[i % cols_per_row]:
                 st.markdown(card_html, unsafe_allow_html=True)
 
-        # ── 分时图（每只股票一行）────────────────────────────
-        st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
+        # ── 分时图 + 日K图（每只股票纵向两行）───────────────
+        import plotly.graph_objects as go
+        from analysis.watchlist import get_stock_hist
+
+        _CHART_BG   = "#0a0a0f"
+        _PLOT_BG    = "#0d0d14"
+        _GRID_COLOR = "#1c1c2e"
+
+        st.markdown("<div style='margin-top:20px'></div>", unsafe_allow_html=True)
+
         for _, row in df_short.iterrows():
             code = row["code"]
             name = row["name"]
-            df_min = load_intraday(code)
-            if df_min.empty:
-                continue
-            import plotly.graph_objects as go
-            fig_min = go.Figure()
-            fig_min.add_trace(go.Scatter(
-                x=df_min["time"], y=df_min["price"],
-                mode="lines", name="价格",
-                line=dict(color="#4da6ff", width=1.5),
-                fill="tozeroy",
-                fillcolor="rgba(77,166,255,0.08)",
-            ))
-            if "avg_price" in df_min.columns and df_min["avg_price"].notna().any():
-                fig_min.add_trace(go.Scatter(
-                    x=df_min["time"], y=df_min["avg_price"],
-                    mode="lines", name="均价",
-                    line=dict(color="#ffd60a", width=1, dash="dot"),
-                ))
-            pct = row["今日涨跌幅%"]
-            pct_str = f"+{pct:.2f}%" if pct >= 0 else f"{pct:.2f}%"
-            fig_min.update_layout(
-                title=dict(text=f"{name}  ¥{row['最新价']:.2f}  {pct_str}",
-                           font=dict(size=13, color="#f5f5f7"), x=0.01),
-                paper_bgcolor="#0a0a0f",
-                plot_bgcolor="#0d0d14",
-                height=160,
-                margin=dict(l=40, r=20, t=32, b=24),
-                xaxis=dict(showgrid=False, tickfont=dict(size=10, color="#636366"),
-                           tickvals=["09:30","10:00","10:30","11:00","11:30",
-                                     "13:00","13:30","14:00","14:30","15:00"]),
-                yaxis=dict(showgrid=True, gridcolor="#1c1c2e",
-                           tickfont=dict(size=10, color="#636366"), side="right"),
-                legend=dict(orientation="h", x=1, xanchor="right", y=1.15,
-                            font=dict(size=10, color="#8e8e93"),
-                            bgcolor="rgba(0,0,0,0)"),
-                hovermode="x unified",
+            pct  = row["今日涨跌幅%"]
+            pct_color = "#30d158" if pct >= 0 else "#ff453a"
+            pct_str   = f"+{pct:.2f}%" if pct >= 0 else f"{pct:.2f}%"
+
+            st.markdown(
+                f'<div style="font-size:14px;font-weight:600;color:#f5f5f7;'
+                f'margin:16px 0 6px 4px">'
+                f'{name} <span style="color:#636366;font-size:12px">{code}</span>'
+                f'&nbsp;&nbsp;¥{row["最新价"]:.2f}'
+                f'&nbsp;<span style="color:{pct_color}">{pct_str}</span></div>',
+                unsafe_allow_html=True,
             )
-            st.plotly_chart(fig_min, use_container_width=True, config={"displayModeBar": False})
+
+            # ── 分时图 ──────────────────────────────────────
+            df_min = load_intraday(code)
+            if not df_min.empty:
+                fig_min = go.Figure()
+                # 价格面积
+                fig_min.add_trace(go.Scatter(
+                    x=df_min["time"], y=df_min["price"],
+                    mode="lines", name="价格",
+                    line=dict(color="#4da6ff", width=2),
+                    fill="tozeroy",
+                    fillcolor="rgba(77,166,255,0.12)",
+                ))
+                # 均价线
+                if df_min["avg_price"].notna().any():
+                    fig_min.add_trace(go.Scatter(
+                        x=df_min["time"], y=df_min["avg_price"],
+                        mode="lines", name="均价",
+                        line=dict(color="#ffd60a", width=1.5),
+                    ))
+                # 昨收基准线
+                y_ref = df_min["price"].iloc[0] if not df_min.empty else None
+                if y_ref:
+                    fig_min.add_hline(y=y_ref, line_color="#636366",
+                                      line_width=0.8, line_dash="dot")
+                fig_min.update_layout(
+                    paper_bgcolor=_CHART_BG, plot_bgcolor=_PLOT_BG,
+                    height=220,
+                    margin=dict(l=8, r=8, t=8, b=8),
+                    xaxis=dict(
+                        showgrid=True, gridcolor=_GRID_COLOR,
+                        tickfont=dict(size=10, color="#636366"),
+                        tickvals=["09:30","10:00","10:30","11:00","11:30",
+                                  "13:00","13:30","14:00","14:30","15:00"],
+                        zeroline=False,
+                    ),
+                    yaxis=dict(
+                        showgrid=True, gridcolor=_GRID_COLOR,
+                        tickfont=dict(size=10, color="#636366"),
+                        side="right", zeroline=False,
+                    ),
+                    legend=dict(orientation="h", x=0, y=1.0,
+                                font=dict(size=10, color="#8e8e93"),
+                                bgcolor="rgba(0,0,0,0)"),
+                    hovermode="x unified",
+                )
+                st.plotly_chart(fig_min, use_container_width=True,
+                                config={"displayModeBar": False})
+
+            # ── 日K图（近60日）──────────────────────────────
+            try:
+                df_k = get_stock_hist(code, name, start="20250101")
+                df_k = df_k.sort_values("date").tail(60)
+                if not df_k.empty:
+                    df_k["MA5"]  = df_k["close"].rolling(5).mean()
+                    df_k["MA20"] = df_k["close"].rolling(20).mean()
+                    fig_k = go.Figure()
+                    fig_k.add_trace(go.Candlestick(
+                        x=df_k["date"],
+                        open=df_k["open"], high=df_k["high"],
+                        low=df_k["low"],   close=df_k["close"],
+                        name="K线",
+                        increasing_line_color="#ff453a",
+                        increasing_fillcolor="#ff453a",
+                        decreasing_line_color="#30d158",
+                        decreasing_fillcolor="#30d158",
+                    ))
+                    fig_k.add_trace(go.Scatter(
+                        x=df_k["date"], y=df_k["MA5"],
+                        mode="lines", name="MA5",
+                        line=dict(color="#ffd60a", width=1.2),
+                    ))
+                    fig_k.add_trace(go.Scatter(
+                        x=df_k["date"], y=df_k["MA20"],
+                        mode="lines", name="MA20",
+                        line=dict(color="#4da6ff", width=1.2),
+                    ))
+                    # 成交量
+                    vol_colors = ["#ff453a" if c >= o else "#30d158"
+                                  for c, o in zip(df_k["close"], df_k["open"])]
+                    fig_k.add_trace(go.Bar(
+                        x=df_k["date"], y=df_k["volume"],
+                        name="成交量", marker_color=vol_colors,
+                        yaxis="y2", opacity=0.5,
+                    ))
+                    fig_k.update_layout(
+                        paper_bgcolor=_CHART_BG, plot_bgcolor=_PLOT_BG,
+                        height=280,
+                        margin=dict(l=8, r=8, t=8, b=8),
+                        xaxis=dict(
+                            showgrid=True, gridcolor=_GRID_COLOR,
+                            tickfont=dict(size=10, color="#636366"),
+                            rangeslider_visible=False, zeroline=False,
+                        ),
+                        yaxis=dict(
+                            showgrid=True, gridcolor=_GRID_COLOR,
+                            tickfont=dict(size=10, color="#636366"),
+                            side="right", zeroline=False,
+                        ),
+                        yaxis2=dict(
+                            overlaying="y", side="left", showgrid=False,
+                            range=[0, df_k["volume"].max() * 4],
+                            tickfont=dict(size=9, color="#444"),
+                        ),
+                        legend=dict(orientation="h", x=0, y=1.0,
+                                    font=dict(size=10, color="#8e8e93"),
+                                    bgcolor="rgba(0,0,0,0)"),
+                        hovermode="x unified",
+                    )
+                    st.plotly_chart(fig_k, use_container_width=True,
+                                    config={"displayModeBar": False})
+            except Exception:
+                pass
+
+            st.markdown("<hr style='border:none;border-top:1px solid #1c1c2e;margin:8px 0'>",
+                        unsafe_allow_html=True)
 
         st.markdown(
             '<div style="font-size:11px;color:#636366;margin-top:8px">'
