@@ -15,6 +15,7 @@ from analysis.sector_flow import (
 from analysis.market_sentiment import get_sentiment_summary, get_northbound
 from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST, WATCHLIST_COST
 from analysis.hot_picks import pick_top5, pick_hot_sectors
+from analysis.tracker import save_picks, fill_results, get_stats, get_history
 from analysis.sector_analysis import get_sector_top50, pick_sector_top5
 from analysis.short_term import pick_short_term_top5
 from ml.predictor import predict_batch
@@ -26,15 +27,101 @@ from ui.charts import (
 )
 
 st.set_page_config(
-    page_title="Ansel Quant Lab",
+    page_title="A股量化择时与选股系统",
     page_icon="static/logo.png",
     layout="wide",
 )
 
+# ── 全局 Bloomberg Terminal 风格 CSS ──────────────────────────
+st.markdown("""
+<style>
+/* 全局背景与字体 */
+.stApp { background-color: #0a0a0f; }
+section[data-testid="stSidebar"] { background-color: #0d0d14; border-right: 1px solid #1e1e2e; }
+
+/* Tab 样式 */
+.stTabs [data-baseweb="tab-list"] {
+    background: #0d0d14;
+    border-bottom: 1px solid #1e1e2e;
+    gap: 0;
+}
+.stTabs [data-baseweb="tab"] {
+    font-size: 11px;
+    font-weight: 500;
+    color: #5a5a7a;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    padding: 10px 18px;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+}
+.stTabs [aria-selected="true"] {
+    color: #00d4aa !important;
+    border-bottom: 2px solid #00d4aa !important;
+    background: transparent !important;
+}
+
+/* Metric 组件 */
+[data-testid="metric-container"] {
+    background: #0d0d14;
+    border: 1px solid #1e1e2e;
+    border-radius: 8px;
+    padding: 12px 16px;
+}
+[data-testid="metric-container"] label { color: #5a5a7a; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
+[data-testid="metric-container"] [data-testid="stMetricValue"] { color: #e8e8e8; font-size: 20px; font-weight: 600; }
+
+/* 按钮 */
+.stButton > button {
+    background: #0d0d14;
+    border: 1px solid #2a2a3e;
+    color: #00d4aa;
+    font-size: 11px;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    border-radius: 6px;
+    transition: all 0.15s;
+}
+.stButton > button:hover { border-color: #00d4aa; background: #001a15; }
+
+/* 分割线 */
+hr { border-color: #1e1e2e; }
+
+/* 通用卡片基础色 */
+.bb-card {
+    background: #0d0d14;
+    border: 1px solid #1e1e2e;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 8px;
+}
+.bb-label { font-size: 10px; color: #5a5a7a; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 3px; }
+.bb-value { font-size: 22px; font-weight: 600; color: #e8e8e8; letter-spacing: -0.5px; }
+.bb-up   { color: #00d4aa; }
+.bb-down { color: #ff4d6d; }
+.bb-tag  { background: #1a1a2e; border: 1px solid #2a2a3e; border-radius: 4px;
+           padding: 1px 7px; font-size: 10px; color: #9090b0; display: inline-block; }
+.bb-tag-green  { border-color: #00d4aa33; color: #00d4aa; background: #001a15; }
+.bb-tag-red    { border-color: #ff4d6d33; color: #ff4d6d; background: #1a0010; }
+.bb-tag-yellow { border-color: #f4c43033; color: #f4c430; background: #1a1500; }
+.bb-section { font-size: 11px; font-weight: 600; color: #9090b0; letter-spacing: 2px;
+              text-transform: uppercase; border-left: 2px solid #00d4aa;
+              padding-left: 10px; margin: 20px 0 12px 0; }
+.bb-bar-track { height: 2px; background: #1e1e2e; border-radius: 2px; margin-top: 8px; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── 页头 ────────────────────────────────────────────────────
 st.markdown(
-    '<h1 style="font-size:28px;font-weight:700;color:#f5f5f7;letter-spacing:-0.5px;margin-bottom:2px">'
-    'Ansel Quant Lab &nbsp;<span style="font-size:14px;font-weight:400;color:#636366;letter-spacing:1px">A-SHARE INTELLIGENCE</span>'
-    '</h1>',
+    '<div style="border-bottom:1px solid #1e1e2e;padding-bottom:12px;margin-bottom:16px">'
+    '<span style="font-size:22px;font-weight:700;color:#e8e8e8;letter-spacing:-0.5px">'
+    'A股量化择时与选股系统</span>'
+    '<span style="font-size:11px;color:#5a5a7a;margin-left:14px;letter-spacing:1px">'
+    'QUANT LAB · A-SHARE INTELLIGENCE</span><br>'
+    '<span style="font-size:11px;color:#3a3a5a;line-height:2">'
+    '基于资金流向与技术因子的实时量化选股平台 — '
+    '集成多维度市场情绪监控、板块轮动识别、AI涨停概率预测与超短线策略信号生成'
+    '</span></div>',
     unsafe_allow_html=True,
 )
 st.caption(f"数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}  |  数据来源：东方财富 / akshare")
@@ -661,11 +748,15 @@ with tab_picks:
             picks_ok = False
 
     if picks_ok:
-        st.markdown('<div class="sector-label">综合精选</div>', unsafe_allow_html=True)
+        try:
+            save_picks(df_picks, "热门精选")
+        except Exception:
+            pass
+        st.markdown('<div class="bb-section">综合精选</div>', unsafe_allow_html=True)
         _render_pick_cards(df_picks, n_cols=5)
 
     # ── 热门板块精选 ─────────────────────────────────────────
-    st.markdown('<div class="sector-label">热门板块精选</div>', unsafe_allow_html=True)
+    st.markdown('<div class="bb-section">热门板块精选</div>', unsafe_allow_html=True)
 
     with st.spinner("分析热门板块中..."):
         try:
@@ -699,9 +790,43 @@ with tab_picks:
             unsafe_allow_html=True)
 
     st.markdown(
-        '<div style="font-size:11px;color:#636366;margin-top:12px">'
+        '<div style="font-size:11px;color:#3a3a5a;margin-top:12px">'
         '⚠ 涨停预测基于技术形态，建议小仓位，跌破开盘价立即止损。</div>',
         unsafe_allow_html=True)
+
+    # ── 推荐追踪历史 ─────────────────────────────────────────
+    st.markdown('<div class="bb-section" style="margin-top:28px">推荐追踪 · 历史胜率</div>',
+                unsafe_allow_html=True)
+    try:
+        fill_results()
+        stats = get_stats()
+        hist_df = get_history(20)
+    except Exception:
+        stats = {}
+        hist_df = pd.DataFrame()
+
+    if stats.get("total_picks", 0) > 0:
+        sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+        sc1.metric("总推荐数", stats["total_picks"])
+        sc2.metric("整体胜率", f"{stats['win_rate']}%")
+        sc3.metric("平均收益", f"{stats['avg_return']:+.2f}%")
+        sc4.metric("最大盈利", f"{stats['max_win']:+.2f}%")
+        sc5.metric("最大亏损", f"{stats['max_loss']:+.2f}%")
+
+        if not hist_df.empty:
+            st.markdown("<br>", unsafe_allow_html=True)
+            disp = hist_df.copy()
+            disp["result_pct"] = disp["result_pct"].apply(
+                lambda x: f"{x:+.2f}%" if pd.notna(x) else "待结算")
+            disp["win"] = disp["win"].apply(
+                lambda x: "✅" if x == 1.0 else ("❌" if x == 0.0 else "—"))
+            disp.columns = ["日期", "来源", "名称", "代码", "推荐价", "得分", "收益", "结果"]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+    else:
+        st.markdown(
+            '<div style="color:#3a3a5a;font-size:12px;padding:8px 0">'
+            '暂无历史记录，推荐数据将在首次加载后自动存档。</div>',
+            unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════
 # Tab 5：超短线（今买明卖）
@@ -772,6 +897,11 @@ with tab_short:
             short_ok = False
 
     if short_ok:
+        try:
+            _st_df = df_short.rename(columns={"今日涨跌幅%": "涨跌幅%", "综合得分": "score"})
+            save_picks(_st_df, "超短线")
+        except Exception:
+            pass
         rank_labels = ["#1", "#2", "#3", "#4", "#5"]
         cols_per_row = 5
         card_cols = st.columns(cols_per_row)
