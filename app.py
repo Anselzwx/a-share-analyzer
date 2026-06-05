@@ -835,26 +835,102 @@ with tab_short:
 
     # ── 量比异动预警 ──────────────────────────────────────────
     st.markdown('<div class="short-rank" style="font-size:13px;color:#f5f5f7;font-weight:600;'
-                'margin-bottom:10px;letter-spacing:0">量比异动预警（主板 ≥3x）</div>',
+                'margin-bottom:10px;letter-spacing:0">量比异动预警（主板量比/换手率 ≥3x）</div>',
                 unsafe_allow_html=True)
 
     @st.cache_data(ttl=300, show_spinner="扫描量比异动...")
     def load_vol_surge(_key: str):
-        """全市场扫描量比≥3x的主板股票，5分钟缓存。"""
+        """全市场扫描量比≥3x的主板股票，5分钟缓存。
+        接口1：东财 spot（含量比字段）
+        接口2：新浪换手榜（近似量比，用换手率≥3%筛异动）
+        """
+        import requests, json as _json
+
+        def _is_main(c):
+            c = str(c).zfill(6)
+            return c.startswith("60") or c.startswith("00")
+
+        # ── 接口1：东财 ──────────────────────────────────────
+        for em_host in ["push2.eastmoney.com", "82.push2.eastmoney.com"]:
+            try:
+                url = (
+                    f"https://{em_host}/api/qt/clist/get"
+                    "?pn=1&pz=500&po=1&np=1&fltt=2&invt=2&fid=f10"
+                    "&fs=m:1+t:2,m:0+t:6,m:0+t:80"
+                    "&fields=f2,f3,f8,f10,f12,f14"
+                )
+                r = requests.get(url, timeout=6,
+                                 headers={"User-Agent": "Mozilla/5.0",
+                                          "Referer": "https://quote.eastmoney.com"})
+                items = r.json()["data"]["diff"]
+                rows = []
+                for it in items:
+                    code = str(it.get("f12", "")).zfill(6)
+                    if not _is_main(code):
+                        continue
+                    vr = float(it.get("f10") or 0)
+                    if vr < 3:
+                        continue
+                    rows.append({
+                        "代码": code,
+                        "名称": it.get("f14", ""),
+                        "最新价": float(it.get("f2") or 0),
+                        "涨跌幅": float(it.get("f3") or 0),
+                        "量比": vr,
+                        "换手率": float(it.get("f8") or 0),
+                    })
+                if rows:
+                    df = pd.DataFrame(rows).sort_values("量比", ascending=False).head(10)
+                    return df.reset_index(drop=True)
+            except Exception:
+                continue
+
+        # ── 接口2：新浪换手率榜（量比字段用换手率近似）────────
         try:
-            import akshare as _ak
-            spot = _ak.stock_zh_a_spot_em()
-            spot["代码"] = spot["代码"].astype(str).str.zfill(6)
-            # 仅主板
-            spot = spot[spot["代码"].apply(lambda c: c.startswith("60") or c.startswith("00"))]
-            spot = spot[~spot["名称"].str.contains("ST|退市", na=False)]
-            for col in ["量比", "涨跌幅", "最新价", "换手率"]:
-                if col in spot.columns:
-                    spot[col] = pd.to_numeric(spot[col], errors="coerce")
-            spot = spot[spot["量比"] >= 3].sort_values("量比", ascending=False).head(15)
-            return spot[["代码", "名称", "最新价", "涨跌幅", "量比", "换手率"]].reset_index(drop=True)
+            rows = []
+            for node in ["hs_a", "sh_a", "sz_a"]:
+                url2 = (
+                    f"http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php"
+                    f"/Market_Center.getHQNodeData?page=1&num=100&sort=turnoverratio"
+                    f"&asc=0&node={node}&symbol=&_s_r_a=page"
+                )
+                r2 = requests.get(url2, timeout=8,
+                                  headers={"Referer": "http://finance.sina.com.cn",
+                                           "User-Agent": "Mozilla/5.0"})
+                data = _json.loads(r2.text)
+                if not isinstance(data, list):
+                    continue
+                for it in data:
+                    code = str(it.get("code", "")).zfill(6)
+                    if not _is_main(code):
+                        continue
+                    name = it.get("name", "")
+                    if "ST" in name or "退市" in name:
+                        continue
+                    try:
+                        turnover = float(it.get("turnoverratio") or 0)
+                        pct      = float(it.get("changepercent") or 0)
+                        price    = float(it.get("trade") or 0)
+                    except Exception:
+                        continue
+                    if turnover < 3:
+                        continue
+                    rows.append({
+                        "代码": code, "名称": name,
+                        "最新价": price, "涨跌幅": pct,
+                        "量比": turnover,   # 用换手率近似
+                        "换手率": turnover,
+                    })
+            if rows:
+                df = (pd.DataFrame(rows)
+                      .drop_duplicates("代码")
+                      .sort_values("量比", ascending=False)
+                      .head(10))
+                return df.reset_index(drop=True)
         except Exception:
-            return pd.DataFrame()
+            pass
+
+        return pd.DataFrame()
 
     _vol_key = datetime.now().strftime("%Y%m%d%H%M")[:-1]
     df_surge = load_vol_surge(_vol_key)
