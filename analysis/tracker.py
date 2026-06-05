@@ -18,14 +18,15 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_PATH = os.path.join(_THIS_DIR, "..", "cache", "picks_history.csv")
 
 _COLUMNS = [
-    "date",       # 推荐日期 YYYY-MM-DD
-    "source",     # 来源（如 "热门精选" / "超短线"）
-    "name",       # 股票名称
-    "code",       # 6位股票代码
-    "price",      # 推荐时价格
-    "score",      # 综合得分 / 涨停潜力分
-    "result_pct", # 次日收益率 %（填充前为 NaN）
-    "win",        # 是否盈利（True/False，填充前为 NaN）
+    "date",            # 推荐日期 YYYY-MM-DD
+    "source",          # 来源（如 "热门精选" / "超短线"）
+    "name",            # 股票名称
+    "code",            # 6位股票代码
+    "price",           # 推荐时价格
+    "score",           # 综合得分 / 涨停潜力分
+    "sentiment_level", # 推荐时市场情绪等级（0-5）
+    "result_pct",      # 次日收益率 %（填充前为 NaN）
+    "win",             # 是否盈利（True/False，填充前为 NaN）
 ]
 
 
@@ -51,7 +52,7 @@ def _save_history(df: pd.DataFrame) -> None:
     df.to_csv(HISTORY_PATH, index=False, encoding="utf-8-sig")
 
 
-def save_picks(df: pd.DataFrame, source: str) -> int:
+def save_picks(df: pd.DataFrame, source: str, sentiment_level: int = None) -> int:
     """
     保存一批推荐到历史 CSV。
 
@@ -86,14 +87,15 @@ def save_picks(df: pd.DataFrame, source: str) -> int:
     today_str = date.today().isoformat()
 
     new_rows = pd.DataFrame({
-        "date":       today_str,
-        "source":     source,
-        "name":       df["name"].values,
-        "code":       df["code"].astype(str).str.zfill(6).values,
-        "price":      pd.to_numeric(df["price"], errors="coerce").values,
-        "score":      pd.to_numeric(df["score"], errors="coerce").values,
-        "result_pct": np.nan,
-        "win":        np.nan,
+        "date":            today_str,
+        "source":          source,
+        "name":            df["name"].values,
+        "code":            df["code"].astype(str).str.zfill(6).values,
+        "price":           pd.to_numeric(df["price"], errors="coerce").values,
+        "score":           pd.to_numeric(df["score"], errors="coerce").values,
+        "sentiment_level": sentiment_level if sentiment_level is not None else np.nan,
+        "result_pct":      np.nan,
+        "win":             np.nan,
     })
 
     history = _load_history()
@@ -245,14 +247,95 @@ def get_stats() -> dict:
 
 
 def get_history(n: int = 20) -> pd.DataFrame:
-    """
-    返回最近 n 条推荐记录，按日期倒序排列。
-
-    result_pct / win 未填充的行显示为空（NaN）。
-    """
+    """返回最近 n 条推荐记录，按日期倒序排列。"""
     history = _load_history()
     if history.empty:
         return history
+    return history.sort_values("date", ascending=False).head(n).reset_index(drop=True)
 
-    history = history.sort_values("date", ascending=False).head(n).reset_index(drop=True)
-    return history
+
+def get_equity_curve() -> pd.DataFrame:
+    """
+    计算累计净值曲线（从1开始，每笔已结算交易更新一次）。
+    假设每笔等权仓位，result_pct 直接累乘。
+    返回 DataFrame: date, nav (净值), drawdown (回撤%)
+    """
+    history = _load_history()
+    settled = history[history["result_pct"].notna()].copy()
+    settled["result_pct"] = pd.to_numeric(settled["result_pct"], errors="coerce")
+    settled = settled.dropna(subset=["result_pct"]).sort_values("date")
+
+    if settled.empty:
+        return pd.DataFrame(columns=["date", "nav", "drawdown"])
+
+    # 每日平均收益（同日多笔取均值，模拟等权持仓）
+    daily = settled.groupby("date")["result_pct"].mean().reset_index()
+    daily["nav"] = (1 + daily["result_pct"] / 100).cumprod()
+
+    # 最大回撤
+    daily["peak"] = daily["nav"].cummax()
+    daily["drawdown"] = (daily["nav"] - daily["peak"]) / daily["peak"] * 100
+
+    return daily[["date", "nav", "drawdown"]]
+
+
+def get_max_drawdown() -> float:
+    """返回历史最大回撤（负数，%）。"""
+    curve = get_equity_curve()
+    if curve.empty:
+        return 0.0
+    return round(curve["drawdown"].min(), 2)
+
+
+def get_sharpe() -> float:
+    """
+    简化夏普比率：年化收益 / 年化波动率（无风险利率取2.5%）。
+    """
+    history = _load_history()
+    settled = history[history["result_pct"].notna()].copy()
+    settled["result_pct"] = pd.to_numeric(settled["result_pct"], errors="coerce")
+    settled = settled.dropna(subset=["result_pct"])
+
+    if len(settled) < 5:
+        return 0.0
+
+    daily = settled.groupby("date")["result_pct"].mean()
+    mean_r = daily.mean()
+    std_r  = daily.std()
+    if std_r == 0:
+        return 0.0
+    # 假设每年240个交易日
+    sharpe = (mean_r - 2.5 / 240) / std_r * (240 ** 0.5)
+    return round(sharpe, 2)
+
+
+def get_sentiment_winrate() -> pd.DataFrame:
+    """
+    按市场情绪等级分层统计胜率。
+    需要历史记录中有 sentiment_level 列；若没有则跳过情绪分层。
+    返回 DataFrame: sentiment_label, picks, win_rate
+    """
+    history = _load_history()
+    settled = history[history["result_pct"].notna()].copy()
+    settled["result_pct"] = pd.to_numeric(settled["result_pct"], errors="coerce")
+    settled = settled.dropna(subset=["result_pct"])
+
+    if settled.empty or "sentiment_level" not in settled.columns:
+        return pd.DataFrame(columns=["情绪", "推荐数", "胜率%"])
+
+    def _label(lvl):
+        try:
+            lvl = int(lvl)
+        except Exception:
+            return "未知"
+        if lvl >= 4: return "极度乐观"
+        if lvl == 3: return "中性偏多"
+        if lvl == 2: return "偏弱"
+        return "极度悲观"
+
+    settled["情绪"] = settled["sentiment_level"].apply(_label)
+    grp = settled.groupby("情绪").agg(
+        推荐数=("result_pct", "count"),
+        胜率=("win", lambda x: round(x.astype(float).mean() * 100, 1))
+    ).reset_index().rename(columns={"胜率": "胜率%"})
+    return grp

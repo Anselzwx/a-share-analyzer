@@ -15,7 +15,9 @@ from analysis.sector_flow import (
 from analysis.market_sentiment import get_sentiment_summary, get_northbound
 from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST, WATCHLIST_COST
 from analysis.hot_picks import pick_top5, pick_hot_sectors
-from analysis.tracker import save_picks, fill_results, get_stats, get_history
+from analysis.tracker import (save_picks, fill_results, get_stats, get_history,
+                               get_equity_curve, get_max_drawdown, get_sharpe,
+                               get_sentiment_winrate)
 from analysis.sector_analysis import get_sector_top50, pick_sector_top5
 from analysis.short_term import pick_short_term_top5
 from ml.predictor import predict_batch
@@ -749,7 +751,7 @@ with tab_picks:
 
     if picks_ok:
         try:
-            save_picks(df_picks, "热门精选")
+            save_picks(df_picks, "热门精选", sentiment_level=sentiment.get("sentiment_level"))
         except Exception:
             pass
         st.markdown('<div class="bb-section">综合精选</div>', unsafe_allow_html=True)
@@ -794,28 +796,127 @@ with tab_picks:
         '⚠ 涨停预测基于技术形态，建议小仓位，跌破开盘价立即止损。</div>',
         unsafe_allow_html=True)
 
-    # ── 推荐追踪历史 ─────────────────────────────────────────
-    st.markdown('<div class="bb-section" style="margin-top:28px">推荐追踪 · 历史胜率</div>',
+    # ── 策略表现追踪 ─────────────────────────────────────────
+    st.markdown('<div class="bb-section" style="margin-top:32px">策略表现追踪</div>',
                 unsafe_allow_html=True)
     try:
         fill_results()
-        stats = get_stats()
-        hist_df = get_history(20)
+        stats      = get_stats()
+        hist_df    = get_history(20)
+        curve_df   = get_equity_curve()
+        sharpe     = get_sharpe()
+        max_dd     = get_max_drawdown()
+        sent_wr    = get_sentiment_winrate()
     except Exception:
-        stats = {}
-        hist_df = pd.DataFrame()
+        stats, hist_df, curve_df = {}, pd.DataFrame(), pd.DataFrame()
+        sharpe, max_dd, sent_wr = 0.0, 0.0, pd.DataFrame()
 
-    if stats.get("total_picks", 0) > 0:
-        sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-        sc1.metric("总推荐数", stats["total_picks"])
-        sc2.metric("整体胜率", f"{stats['win_rate']}%")
-        sc3.metric("平均收益", f"{stats['avg_return']:+.2f}%")
-        sc4.metric("最大盈利", f"{stats['max_win']:+.2f}%")
-        sc5.metric("最大亏损", f"{stats['max_loss']:+.2f}%")
+    has_data = stats.get("total_picks", 0) > 0
 
+    if has_data:
+        # ── 核心指标一行 ─────────────────────────────────────
+        kc1, kc2, kc3, kc4, kc5, kc6 = st.columns(6)
+        kc1.metric("总推荐数",   stats["total_picks"])
+        kc2.metric("整体胜率",   f"{stats['win_rate']}%")
+        kc3.metric("平均收益",   f"{stats['avg_return']:+.2f}%")
+        kc4.metric("最大回撤",   f"{max_dd:.2f}%")
+        kc5.metric("夏普比率",   f"{sharpe:.2f}")
+        kc6.metric("近10笔胜率", f"{stats['recent_10_win_rate']}%")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        chart_l, chart_r = st.columns([3, 1])
+
+        # ── 累计净值曲线 + 回撤 ──────────────────────────────
+        with chart_l:
+            st.markdown('<div class="bb-section">累计净值曲线</div>', unsafe_allow_html=True)
+            if not curve_df.empty:
+                fig_nav = go.Figure()
+                # 净值曲线
+                fig_nav.add_trace(go.Scatter(
+                    x=curve_df["date"], y=curve_df["nav"],
+                    mode="lines", name="净值",
+                    line=dict(color="#00d4aa", width=2),
+                    fill="tozeroy",
+                    fillcolor="rgba(0,212,170,0.06)",
+                ))
+                # 基准线
+                fig_nav.add_hline(y=1.0, line_dash="dot",
+                                  line_color="#3a3a5a", line_width=1)
+                fig_nav.update_layout(
+                    height=220, margin=dict(l=0, r=0, t=10, b=0),
+                    paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f",
+                    font=dict(color="#5a5a7a", size=10),
+                    xaxis=dict(gridcolor="#1e1e2e", showgrid=True),
+                    yaxis=dict(gridcolor="#1e1e2e", showgrid=True),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_nav, use_container_width=True)
+
+                # 回撤区域图
+                fig_dd = go.Figure()
+                fig_dd.add_trace(go.Scatter(
+                    x=curve_df["date"], y=curve_df["drawdown"],
+                    mode="lines", name="回撤%",
+                    line=dict(color="#ff4d6d", width=1.5),
+                    fill="tozeroy",
+                    fillcolor="rgba(255,77,109,0.08)",
+                ))
+                fig_dd.update_layout(
+                    height=100, margin=dict(l=0, r=0, t=4, b=0),
+                    paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f",
+                    font=dict(color="#5a5a7a", size=10),
+                    xaxis=dict(gridcolor="#1e1e2e", showgrid=True),
+                    yaxis=dict(gridcolor="#1e1e2e", showgrid=True,
+                               tickformat=".1f", ticksuffix="%"),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_dd, use_container_width=True)
+            else:
+                st.markdown('<div style="color:#3a3a5a;font-size:12px;padding:20px 0">'
+                            '结算数据不足，净值曲线将在推荐结果结算后自动生成。</div>',
+                            unsafe_allow_html=True)
+
+        # ── 情绪分层胜率 ─────────────────────────────────────
+        with chart_r:
+            st.markdown('<div class="bb-section">情绪分层胜率</div>', unsafe_allow_html=True)
+            if not sent_wr.empty:
+                fig_sent = go.Figure(go.Bar(
+                    x=sent_wr["胜率%"],
+                    y=sent_wr["情绪"],
+                    orientation="h",
+                    marker_color=["#00d4aa" if v >= 60 else "#f4c430" if v >= 40 else "#ff4d6d"
+                                  for v in sent_wr["胜率%"]],
+                    text=[f"{v}%" for v in sent_wr["胜率%"]],
+                    textposition="outside",
+                    textfont=dict(color="#9090b0", size=11),
+                ))
+                fig_sent.update_layout(
+                    height=220, margin=dict(l=0, r=40, t=10, b=0),
+                    paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f",
+                    font=dict(color="#5a5a7a", size=10),
+                    xaxis=dict(range=[0, 110], showgrid=False, showticklabels=False),
+                    yaxis=dict(gridcolor="#1e1e2e"),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_sent, use_container_width=True)
+                # 各情绪推荐数
+                for _, r in sent_wr.iterrows():
+                    st.markdown(
+                        f'<div style="font-size:10px;color:#5a5a7a;margin-bottom:2px">'
+                        f'{r["情绪"]} · {r["推荐数"]}笔</div>',
+                        unsafe_allow_html=True)
+            else:
+                st.markdown('<div style="color:#3a3a5a;font-size:12px;padding:20px 0">'
+                            '情绪数据将在记录积累后显示。</div>',
+                            unsafe_allow_html=True)
+
+        # ── 历史明细 ─────────────────────────────────────────
+        st.markdown('<div class="bb-section" style="margin-top:20px">推荐明细</div>',
+                    unsafe_allow_html=True)
         if not hist_df.empty:
-            st.markdown("<br>", unsafe_allow_html=True)
-            disp = hist_df.copy()
+            disp = hist_df[["date", "source", "name", "code",
+                            "price", "score", "result_pct", "win"]].copy()
             disp["result_pct"] = disp["result_pct"].apply(
                 lambda x: f"{x:+.2f}%" if pd.notna(x) else "待结算")
             disp["win"] = disp["win"].apply(
@@ -824,8 +925,8 @@ with tab_picks:
             st.dataframe(disp, use_container_width=True, hide_index=True)
     else:
         st.markdown(
-            '<div style="color:#3a3a5a;font-size:12px;padding:8px 0">'
-            '暂无历史记录，推荐数据将在首次加载后自动存档。</div>',
+            '<div style="color:#3a3a5a;font-size:12px;padding:12px 0">'
+            '暂无历史记录，推荐数据将在首次加载后自动存档，T+1收盘后自动结算。</div>',
             unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════
@@ -899,7 +1000,7 @@ with tab_short:
     if short_ok:
         try:
             _st_df = df_short.rename(columns={"今日涨跌幅%": "涨跌幅%", "综合得分": "score"})
-            save_picks(_st_df, "超短线")
+            save_picks(_st_df, "超短线", sentiment_level=sentiment.get("sentiment_level"))
         except Exception:
             pass
         rank_labels = ["#1", "#2", "#3", "#4", "#5"]
