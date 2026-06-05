@@ -26,12 +26,17 @@ from ui.charts import (
 )
 
 st.set_page_config(
-    page_title="A股资金流向分析",
-    page_icon="📊",
+    page_title="Ansel Quant Lab",
+    page_icon="static/logo.png",
     layout="wide",
 )
 
-st.title("📊 A股资金流向分析")
+st.markdown(
+    '<h1 style="font-size:28px;font-weight:700;color:#f5f5f7;letter-spacing:-0.5px;margin-bottom:2px">'
+    'Ansel Quant Lab &nbsp;<span style="font-size:14px;font-weight:400;color:#636366;letter-spacing:1px">A-SHARE INTELLIGENCE</span>'
+    '</h1>',
+    unsafe_allow_html=True,
+)
 st.caption(f"数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}  |  数据来源：东方财富 / akshare")
 
 # ── 侧边栏控制 ────────────────────────────────────────────────
@@ -102,9 +107,9 @@ st.divider()
 
 # ── 主 Tab ────────────────────────────────────────────────────
 tab_today, tab_hist, tab_watch, tab_picks, tab_short, tab_power, tab_semi, tab_optical, tab_space, tab_auto, tab_ml = st.tabs(
-    ["今日资金流向", "历史趋势对比", "自选股", "🔥 热门精选",
-     "📈 超短线", "⚡ 电力板块", "🔬 半导体板块", "💡 光模块", "🚀 商业航天", "🚗 智能驾驶",
-     "🤖 ML 涨停预测"]
+    ["今日资金流向", "历史趋势对比", "自选股", "热门精选",
+     "超短线", "电力板块", "半导体板块", "光模块", "商业航天", "智能驾驶",
+     "ML 涨停预测"]
 )
 
 # ════════════════════════════════════════════════════════════
