@@ -333,7 +333,7 @@ def _score_zt_potential(row: pd.Series, ind: dict) -> tuple:
     return round(score, 1), "，".join(reasons)
 
 
-def pick_top3(max_candidates: int = 30) -> pd.DataFrame:
+def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
     """
     从热门上涨榜中，排除已涨停股，预测今日最可能涨停的3只。
     每15分钟刷新缓存（盘中需要更实时）。
@@ -396,8 +396,146 @@ def pick_top3(max_candidates: int = 30) -> pd.DataFrame:
     df_result = (
         pd.DataFrame(records)
         .sort_values("涨停潜力分", ascending=False)
-        .head(3)
+        .head(5)
         .reset_index(drop=True)
     )
     save(cache_key, df_result)
     return df_result
+
+
+def pick_hot_sectors(top_n_sectors: int = 5, stocks_per_sector: int = 4) -> list:
+    """
+    找今日净流入前N的热门板块，每个板块选出评分最高的3-5只主板股。
+    返回 list of dict: [{"sector": str, "stocks": DataFrame}, ...]
+    """
+    from datetime import datetime
+    from analysis.sector_flow import get_sector_flow
+    from analysis.sector_analysis import fetch_sector_stocks
+
+    now = datetime.now()
+    slot = f"{now.hour}_{now.minute // 15}"
+    cache_key = f"hot_sector_picks_{cache_date()}_{slot}"
+
+    if not is_stale(cache_key, max_age_minutes=15):
+        cached = load(cache_key)
+        if cached is not None and not cached.empty:
+            # 重建 list of dict
+            result = []
+            for sector, grp in cached.groupby("_sector", sort=False):
+                result.append({"sector": sector, "stocks": grp.drop(columns=["_sector"]).reset_index(drop=True)})
+            return result
+
+    # 今日净流入前N板块（行业板块）
+    try:
+        sf = get_sector_flow(use_concept=False)
+        sf["main_net_inflow"] = pd.to_numeric(sf["main_net_inflow"], errors="coerce")
+        top_sectors = sf.nlargest(top_n_sectors, "main_net_inflow")["sector"].tolist()
+    except Exception:
+        return []
+
+    # 板块名称 → 同花顺代码映射（常见热门板块）
+    SECTOR_THS = {
+        "半导体": ("881121", "thshy"),
+        "光学光电子": ("881129", "thshy"),
+        "消费电子": ("881108", "thshy"),
+        "通信设备": ("881101", "thshy"),
+        "软件开发": ("881131", "thshy"),
+        "医疗器械": ("881204", "thshy"),
+        "电力": ("881145", "thshy"),
+        "电池": ("881127", "thshy"),
+        "汽车零部件": ("881125", "thshy"),
+        "国防军工": ("881105", "thshy"),
+        "银行": ("881101", "thshy"),
+        "化工": ("881113", "thshy"),
+        "房地产": ("881109", "thshy"),
+        "煤炭": ("881103", "thshy"),
+        "钢铁": ("881106", "thshy"),
+        "有色金属": ("881104", "thshy"),
+        "机械设备": ("881114", "thshy"),
+        "电子元件": ("881122", "thshy"),
+        "计算机设备": ("881130", "thshy"),
+        "人工智能": ("309006", "gn"),
+        "机器人": ("308931", "gn"),
+        "低空经济": ("310013", "gn"),
+        "量子计算": ("309194", "gn"),
+        "固态电池": ("309065", "gn"),
+    }
+
+    def _process_sector(sector_name):
+        cfg = SECTOR_THS.get(sector_name)
+        if not cfg:
+            return None
+        ths_code, stype = cfg
+        try:
+            df = fetch_sector_stocks(ths_code, pages=2, sector_type=stype)
+        except Exception:
+            return None
+        if df.empty:
+            return None
+
+        # 仅主板
+        df = df[df["code"].apply(lambda c: c.startswith("60") or c.startswith("00"))]
+        # 涨幅1.5-9.4%，量比≥1.2
+        for col in ["涨跌幅(%)", "量比"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df[df["涨跌幅(%)"].between(1.5, 9.4)]
+        df = df[df["量比"] >= 1.2]
+        if df.empty:
+            return None
+
+        candidates = df.head(20)
+        records = []
+
+        def _eval(row):
+            ind = _compute_indicators(row["code"])
+            if ind is None:
+                return None
+            fake_row = pd.Series({
+                "排名较昨日变动": 500,
+                "涨跌幅": row["涨跌幅(%)"],
+            })
+            score, reason = _score_zt_potential(fake_row, ind)
+            return {
+                "name": row["名称"],
+                "code": row["code"],
+                "最新价": row["现价"],
+                "涨跌幅%": row["涨跌幅(%)"],
+                "量比": round(ind["vol_ratio_hist"], 2),
+                "RSI14": round(ind["rsi"], 1),
+                "60日区间位%": round(ind["range_pos"], 1),
+                "涨停潜力分": score,
+                "理由": reason,
+            }
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futs = [ex.submit(_eval, r) for _, r in candidates.iterrows()]
+            for f in as_completed(futs):
+                res = f.result()
+                if res:
+                    records.append(res)
+
+        if not records:
+            return None
+
+        top = (pd.DataFrame(records)
+               .sort_values("涨停潜力分", ascending=False)
+               .head(stocks_per_sector)
+               .reset_index(drop=True))
+        return {"sector": sector_name, "stocks": top}
+
+    result = []
+    for s in top_sectors:
+        r = _process_sector(s)
+        if r:
+            result.append(r)
+
+    # 缓存：展平存储
+    if result:
+        frames = []
+        for r in result:
+            tmp = r["stocks"].copy()
+            tmp["_sector"] = r["sector"]
+            frames.append(tmp)
+        save(cache_key, pd.concat(frames, ignore_index=True))
+
+    return result

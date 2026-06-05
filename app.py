@@ -14,7 +14,7 @@ from analysis.sector_flow import (
 )
 from analysis.market_sentiment import get_sentiment_summary, get_northbound
 from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST, WATCHLIST_COST
-from analysis.hot_picks import pick_top3
+from analysis.hot_picks import pick_top5, pick_hot_sectors
 from analysis.sector_analysis import get_sector_top50, pick_sector_top5
 from analysis.short_term import pick_short_term_top5
 from ml.predictor import predict_batch
@@ -550,127 +550,153 @@ with tab_picks:
     st.markdown("""
 <style>
 .pick-card {
-    background: #1c1c1e;
-    border-radius: 14px;
-    padding: 16px 20px;
-    margin-bottom: 10px;
+    background: #1c1c1e; border-radius: 14px;
+    padding: 14px 16px; margin-bottom: 8px;
 }
-.pick-rank { font-size: 11px; color: #636366; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 2px; }
-.pick-name { font-size: 17px; font-weight: 600; color: #f5f5f7; }
-.pick-price { font-size: 28px; font-weight: 600; color: #f5f5f7; letter-spacing: -0.5px; margin: 4px 0; }
-.pick-pct-up { color: #30d158; font-size: 13px; font-weight: 500; }
-.pick-pct-dn { color: #ff453a; font-size: 13px; font-weight: 500; }
-.pick-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 6px 0; }
-.pick-tag  { background: #2c2c2e; border-radius: 6px; padding: 2px 8px; font-size: 11px; color: #ebebf5cc; }
-.pick-tag-green  { background: #0a2a1a; color: #30d158; }
-.pick-tag-yellow { background: #2a2000; color: #ffd60a; }
-.pick-tag-red    { background: #2a0a0a; color: #ff453a; }
-.pick-reason { font-size: 11px; color: #8e8e93; margin-top: 4px; line-height: 1.5; }
-.pick-bar { height: 3px; border-radius: 2px; background: #2c2c2e; margin-top: 8px; }
+.pick-rank  { font-size: 10px; color: #636366; letter-spacing: 1px; text-transform: uppercase; }
+.pick-name  { font-size: 15px; font-weight: 600; color: #f5f5f7; margin: 2px 0; }
+.pick-price { font-size: 22px; font-weight: 600; color: #f5f5f7; letter-spacing: -0.5px; }
+.pick-pct-up  { color: #30d158; font-size: 12px; font-weight: 500; }
+.pick-pct-dn  { color: #ff453a; font-size: 12px; font-weight: 500; }
+.pick-tags  { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 4px 0; }
+.pick-tag         { background: #2c2c2e; border-radius: 5px; padding: 1px 7px; font-size: 10px; color: #ebebf5cc; }
+.pick-tag-green   { background: #0a2a1a; color: #30d158; }
+.pick-tag-yellow  { background: #2a2000; color: #ffd60a; }
+.pick-tag-red     { background: #2a0a0a; color: #ff453a; }
+.pick-reason { font-size: 10px; color: #8e8e93; line-height: 1.5; }
+.pick-bar    { height: 3px; border-radius: 2px; background: #2c2c2e; margin-top: 6px; }
+.sector-label {
+    font-size: 13px; font-weight: 600; color: #f5f5f7;
+    margin: 20px 0 10px 0; letter-spacing: 0.3px;
+}
+.sector-badge {
+    display: inline-block; background: #2c2c2e; border-radius: 6px;
+    padding: 2px 10px; font-size: 11px; color: #ffd60a;
+    margin-left: 8px; vertical-align: middle;
+}
 </style>
 """, unsafe_allow_html=True)
 
     hdr_l, hdr_r = st.columns([5, 1])
     with hdr_l:
         st.markdown(
-            '<div style="font-size:12px;color:#8e8e93;padding:10px 0">'
-            '蓄势待涨停精选 &nbsp;·&nbsp; 主板量比爆发+均线多头+RSI健康 &nbsp;·&nbsp; 每15分钟刷新'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+            '<div style="font-size:12px;color:#8e8e93;padding:8px 0">'
+            '综合精选5只 + 今日热门板块每板块3-4只 &nbsp;·&nbsp; 主板 &nbsp;·&nbsp; 每15分钟刷新'
+            '</div>', unsafe_allow_html=True)
     with hdr_r:
         if st.button("↻ 刷新", key="refresh_picks", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
-    @st.cache_data(ttl=900, show_spinner="分析涨停潜力（约20秒）...")
-    def load_hot_picks():
-        return pick_top3(max_candidates=30)
-
-    with st.spinner("筛选中..."):
-        try:
-            df_picks = load_hot_picks()
-            picks_ok = not df_picks.empty
-        except Exception as e:
-            st.error(f"分析失败：{e}")
-            picks_ok = False
-
-    if picks_ok:
-        card_cols = st.columns(3)
-        rank_labels = ["#1", "#2", "#3"]
-
-        for i, (_, row) in enumerate(df_picks.iterrows()):
-            pct  = row["涨跌幅%"]
+    def _render_pick_cards(df_rows, n_cols=5):
+        """通用卡片渲染，df_rows需含 name/code/最新价/涨跌幅%/量比/RSI14/60日区间位%/涨停潜力分/理由"""
+        cols = st.columns(n_cols)
+        for i, (_, row) in enumerate(df_rows.iterrows()):
+            pct = row["涨跌幅%"]
             pct_str = f"+{pct:.2f}%" if pct >= 0 else f"{pct:.2f}%"
             pct_cls = "pick-pct-up" if pct >= 0 else "pick-pct-dn"
             score = row["涨停潜力分"]
             score_w = min(int(score), 100)
-            score_color = "#30d158" if score >= 75 else "#ffd60a" if score >= 55 else "#ff453a"
+            sc = "#30d158" if score >= 75 else "#ffd60a" if score >= 55 else "#ff453a"
 
             tags = []
             vr = row["量比"]
-            if vr >= 2.5:
-                tags.append(("pick-tag-green", f"量比{vr:.1f}x"))
-            elif vr >= 1.5:
-                tags.append(("pick-tag", f"量比{vr:.1f}x"))
-            else:
-                tags.append(("pick-tag-red", f"量比{vr:.1f}x"))
+            if vr >= 2.5:   tags.append(("pick-tag-green",  f"量比{vr:.1f}x"))
+            elif vr >= 1.5: tags.append(("pick-tag",        f"量比{vr:.1f}x"))
+            else:           tags.append(("pick-tag-red",    f"量比{vr:.1f}x"))
 
             rsi = row["RSI14"]
-            if 45 <= rsi <= 68:
-                tags.append(("pick-tag-green", f"RSI{rsi:.0f}"))
-            elif rsi > 75:
-                tags.append(("pick-tag-red", f"RSI{rsi:.0f}"))
-            else:
-                tags.append(("pick-tag", f"RSI{rsi:.0f}"))
+            if 45 <= rsi <= 68:  tags.append(("pick-tag-green", f"RSI{rsi:.0f}"))
+            elif rsi > 75:       tags.append(("pick-tag-red",   f"RSI{rsi:.0f}"))
+            else:                tags.append(("pick-tag",       f"RSI{rsi:.0f}"))
 
-            hot = int(row["热度排名上升"])
-            if hot >= 10:
-                tags.append(("pick-tag-green", f"热度+{hot}"))
-            elif hot > 0:
-                tags.append(("pick-tag", f"热度+{hot}"))
+            if "热度排名上升" in row:
+                hot = int(row["热度排名上升"])
+                if hot >= 10:  tags.append(("pick-tag-green", f"热度+{hot}"))
 
             rp = row["60日区间位%"]
-            if rp < 50:
-                tags.append(("pick-tag-green", f"低位{rp:.0f}%"))
-            elif rp >= 85:
-                tags.append(("pick-tag-red", f"高位{rp:.0f}%"))
+            if rp < 50:    tags.append(("pick-tag-green",  f"低位{rp:.0f}%"))
+            elif rp >= 85: tags.append(("pick-tag-red",    f"高位{rp:.0f}%"))
 
-            gain5 = row["5日涨幅%"]
-            if gain5 > 15:
-                tags.append(("pick-tag-yellow", f"5日+{gain5:.0f}%"))
+            if "5日涨幅%" in row and row["5日涨幅%"] > 15:
+                tags.append(("pick-tag-yellow", f"5日+{row['5日涨幅%']:.0f}%"))
 
             tags_html = "".join(
-                f'<span class="pick-tag {cls}">{lbl}</span>'
-                for cls, lbl in tags
-            )
+                f'<span class="pick-tag {c}">{l}</span>' for c, l in tags)
 
-            with card_cols[i]:
+            with cols[i % n_cols]:
                 st.markdown(f"""
 <div class="pick-card">
-  <div class="pick-rank">{rank_labels[i]} &nbsp;·&nbsp; {row['code']}</div>
+  <div class="pick-rank">#{i+1} &nbsp;·&nbsp; {row['code']}</div>
   <div class="pick-name">{row['name']}</div>
   <div class="pick-price">¥{row['最新价']:.2f} <span class="{pct_cls}">{pct_str}</span></div>
   <div class="pick-tags">{tags_html}</div>
   <div class="pick-reason">{row['理由']}</div>
   <div class="pick-bar">
-    <div style="width:{score_w}%;height:3px;background:{score_color};border-radius:2px"></div>
+    <div style="width:{score_w}%;height:3px;background:{sc};border-radius:2px"></div>
   </div>
-  <div style="font-size:10px;color:#636366;margin-top:3px;text-align:right">{score:.0f}/100</div>
-</div>
-""", unsafe_allow_html=True)
+  <div style="font-size:10px;color:#636366;margin-top:2px;text-align:right">{score:.0f}/100</div>
+</div>""", unsafe_allow_html=True)
 
-        st.markdown(
-            '<div style="font-size:11px;color:#636366;margin-top:4px">'
-            '⚠ 涨停预测基于技术形态，建议小仓位，跌破开盘价立即止损。</div>',
-            unsafe_allow_html=True,
-        )
+    # ── 综合精选5只 ──────────────────────────────────────────
+    @st.cache_data(ttl=900, show_spinner="综合精选筛选中...")
+    def load_hot_picks():
+        return pick_top5(max_candidates=30)
+
+    @st.cache_data(ttl=900, show_spinner="热门板块分析中（约30秒）...")
+    def load_sector_picks():
+        return pick_hot_sectors(top_n_sectors=5, stocks_per_sector=4)
+
+    with st.spinner("加载中..."):
+        try:
+            df_picks = load_hot_picks()
+            picks_ok = not df_picks.empty
+        except Exception as e:
+            st.error(f"综合精选失败：{e}")
+            picks_ok = False
+
+    if picks_ok:
+        st.markdown('<div class="sector-label">综合精选</div>', unsafe_allow_html=True)
+        _render_pick_cards(df_picks, n_cols=5)
+
+    # ── 热门板块精选 ─────────────────────────────────────────
+    st.markdown('<div class="sector-label">热门板块精选</div>', unsafe_allow_html=True)
+
+    with st.spinner("分析热门板块中..."):
+        try:
+            sector_picks = load_sector_picks()
+        except Exception:
+            sector_picks = []
+
+    if sector_picks:
+        for sp in sector_picks:
+            inflow_row = None
+            try:
+                sf_now = get_sector_flow(use_concept=False)
+                sf_now["main_net_inflow"] = pd.to_numeric(sf_now["main_net_inflow"], errors="coerce")
+                matched = sf_now[sf_now["sector"] == sp["sector"]]
+                if not matched.empty:
+                    inflow_val = matched["main_net_inflow"].iloc[0] / 1e8
+                    inflow_str = f"净流入 {inflow_val:+.1f}亿"
+                else:
+                    inflow_str = ""
+            except Exception:
+                inflow_str = ""
+
+            badge = f'<span class="sector-badge">{inflow_str}</span>' if inflow_str else ""
+            st.markdown(
+                f'<div class="sector-label">{sp["sector"]}{badge}</div>',
+                unsafe_allow_html=True)
+            _render_pick_cards(sp["stocks"], n_cols=4)
     else:
         st.markdown(
-            '<div style="color:#636366;font-size:13px;padding:20px 0">'
-            '暂无数据，请稍后重试。</div>',
-            unsafe_allow_html=True,
-        )
+            '<div style="color:#636366;font-size:12px">板块数据获取中，请稍后刷新。</div>',
+            unsafe_allow_html=True)
+
+    st.markdown(
+        '<div style="font-size:11px;color:#636366;margin-top:12px">'
+        '⚠ 涨停预测基于技术形态，建议小仓位，跌破开盘价立即止损。</div>',
+        unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════
 # Tab 5：超短线（今买明卖）
