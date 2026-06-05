@@ -327,6 +327,11 @@ def _score_short(row: pd.Series, ind: dict) -> tuple:
     else:
         risks.append(f"区间高位{rp:.0f}%⚠")
 
+    # 性价比加分：涨幅<3% 但量比>2，说明刚启动未追高
+    if pct < 3 and ind["vol_ratio"] >= 2.0:
+        score += 8
+        reasons.append(f"性价比佳(+{pct:.1f}%未追高)")
+
     # 风险扣分：近3日有大跌
     if ind["max_down_3d"] < -4:
         score -= 8
@@ -341,7 +346,10 @@ def _score_short(row: pd.Series, ind: dict) -> tuple:
     elif ind["gain_5d"] > 15:
         score -= 4
 
-    return round(score, 1), "，".join(reasons), "，".join(risks) if risks else "无明显风险"
+    # 性价比标记（供外部判断）
+    value_play = pct < 3 and ind["vol_ratio"] >= 2.0
+
+    return round(score, 1), "，".join(reasons), "，".join(risks) if risks else "无明显风险", value_play
 
 
 def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:
@@ -374,7 +382,7 @@ def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:
         ind = _compute_short_indicators(row["code"])
         if ind is None:
             return None
-        score, reason, risk = _score_short(row, ind)
+        score, reason, risk, value_play = _score_short(row, ind)
         return {
             "name": row["name"],
             "code": row["code"],
@@ -395,6 +403,7 @@ def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:
             "综合得分": score,
             "买入理由": reason,
             "风险提示": risk,
+            "性价比佳": value_play,
         }
 
     records = []

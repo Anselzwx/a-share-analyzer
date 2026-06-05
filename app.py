@@ -857,13 +857,15 @@ with tab_picks:
 
     if has_data:
         # ── 核心指标一行 ─────────────────────────────────────
-        kc1, kc2, kc3, kc4, kc5, kc6 = st.columns(6)
-        kc1.metric("总推荐数",   stats["total_picks"])
-        kc2.metric("整体胜率",   f"{stats['win_rate']}%")
-        kc3.metric("平均收益",   f"{stats['avg_return']:+.2f}%")
-        kc4.metric("最大回撤",   f"{max_dd:.2f}%")
-        kc5.metric("夏普比率",   f"{sharpe:.2f}")
-        kc6.metric("近10笔胜率", f"{stats['recent_10_win_rate']}%")
+        kc1, kc2, kc3, kc4, kc5, kc6, kc7, kc8 = st.columns(8)
+        kc1.metric("已结算笔数",   stats.get("settled_picks", 0))
+        kc2.metric("整体胜率",     f"{stats['win_rate']}%")
+        kc3.metric("扣费后胜率",   f"{stats.get('win_rate_fee', 0.0)}%")
+        kc4.metric("达标胜率≥3%",  f"{stats.get('win_rate_3pct', 0.0)}%")
+        kc5.metric("平均收益",     f"{stats['avg_return']:+.2f}%")
+        kc6.metric("最大回撤",     f"{max_dd:.2f}%")
+        kc7.metric("夏普比率",     f"{sharpe:.2f}")
+        kc8.metric("近10笔胜率",   f"{stats['recent_10_win_rate']}%")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1016,9 +1018,9 @@ with tab_short:
         st.markdown(
             '<div class="short-strategy">'
             '<b>买入</b> 尾盘14:45后确认量能 &nbsp;·&nbsp; '
-            '<b>卖出</b> 次日开盘高开1-2%即出 &nbsp;·&nbsp; '
-            '<b>止损</b> 跌破今日开盘价立即出 &nbsp;·&nbsp; '
-            '<b>仓位</b> 单只≤总仓位20%'
+            '<b>卖出</b> 次日开盘即出（目标+3%）&nbsp;·&nbsp; '
+            '<b>止损</b> -3%自动止损 &nbsp;·&nbsp; '
+            '<b>仓位</b> 按得分动态分配，最多同时3只'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -1026,6 +1028,30 @@ with tab_short:
         if st.button("↻ 刷新", key="refresh_short", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
+
+    # ── 情绪入场过滤横幅 ─────────────────────────────────────
+    _slvl = sentiment.get("sentiment_level", 0)
+    if _slvl <= 1:
+        st.markdown(
+            '<div style="background:#2a0a0a;border:1px solid #ff453a;border-radius:10px;'
+            'padding:10px 18px;margin-bottom:12px;font-size:13px;color:#ff453a">'
+            '<b>情绪极差，建议空仓</b> — 当前涨停/跌停比值极低，超短线胜率显著下降，以下推荐仅供参考</div>',
+            unsafe_allow_html=True,
+        )
+    elif _slvl == 2:
+        st.markdown(
+            '<div style="background:#2a1a00;border:1px solid #ffd60a;border-radius:10px;'
+            'padding:10px 18px;margin-bottom:12px;font-size:13px;color:#ffd60a">'
+            '<b>情绪偏弱，谨慎操作</b> — 建议减半仓位，优先选性价比佳的标的</div>',
+            unsafe_allow_html=True,
+        )
+    elif _slvl >= 4:
+        st.markdown(
+            '<div style="background:#0a2a1a;border:1px solid #30d158;border-radius:10px;'
+            'padding:10px 18px;margin-bottom:12px;font-size:13px;color:#30d158">'
+            '<b>情绪良好，可积极入场</b> — 当前市场情绪支撑超短线策略，按满仓位操作</div>',
+            unsafe_allow_html=True,
+        )
 
     @st.cache_data(ttl=900, show_spinner="筛选超短线候选（约20秒）...")
     def load_short_picks():
@@ -1045,6 +1071,18 @@ with tab_short:
             save_picks(_st_df, "超短线", sentiment_level=sentiment.get("sentiment_level"))
         except Exception:
             pass
+
+        # 计算建议仓位（与 tracker 一致的逻辑）
+        from analysis.tracker import get_current_capital, _calc_positions
+        _avail_cap = get_current_capital()
+        _scores_list = df_short["综合得分"].tolist()
+        _positions = _calc_positions(_scores_list, _avail_cap)
+        while len(_positions) < len(df_short):
+            _positions.append(0.0)
+
+        # 情绪调整仓位系数
+        _sent_mult = 1.0 if _slvl >= 4 else 0.5 if _slvl == 2 else (0.0 if _slvl <= 1 else 0.8)
+
         rank_labels = ["#1", "#2", "#3", "#4", "#5"]
         cols_per_row = 5
         card_cols = st.columns(cols_per_row)
@@ -1056,9 +1094,25 @@ with tab_short:
             score = row["综合得分"]
             score_w = min(int(score), 100)
             score_color = "#30d158" if score >= 75 else "#ffd60a" if score >= 55 else "#ff453a"
+            value_play = row.get("性价比佳", False)
+
+            # 建议仓位
+            raw_pos = _positions[i] if i < len(_positions) else 0.0
+            adj_pos = round(raw_pos * _sent_mult / 1000) * 1000  # 取整到千元
+            if adj_pos >= 10000:
+                pos_str = f"¥{adj_pos/10000:.1f}万"
+                pos_color = "#30d158"
+            elif adj_pos > 0:
+                pos_str = f"¥{adj_pos:.0f}"
+                pos_color = "#ffd60a"
+            else:
+                pos_str = "建议空仓"
+                pos_color = "#ff453a"
 
             # 标签
             tags = []
+            if value_play:
+                tags.append(('short-tag-green', '性价比佳'))
             vr = row["量比"]
             if vr >= 2.5:
                 tags.append(('short-tag-green', f'量比{vr:.1f}x'))
@@ -1112,7 +1166,10 @@ with tab_short:
   <div class="short-score-bar">
     <div style="width:{score_w}%;height:3px;background:{score_color};border-radius:2px"></div>
   </div>
-  <div style="font-size:10px;color:#636366;margin-top:3px;text-align:right">{score:.0f}/100</div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
+    <div style="font-size:10px;color:#636366">{score:.0f}/100</div>
+    <div style="font-size:12px;font-weight:600;color:{pos_color}">建议 {pos_str}</div>
+  </div>
 </div>
 """
             with card_cols[i % cols_per_row]:

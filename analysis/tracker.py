@@ -182,9 +182,10 @@ def save_picks(df: pd.DataFrame, source: str, sentiment_level: int = None) -> in
     return max(added, 0)
 
 
-def _get_next_trading_close(code: str, pick_date: str) -> float | None:
+def _get_next_trading_open(code: str, pick_date: str) -> float | None:
     """
-    用 akshare stock_zh_a_hist 获取 pick_date 之后第一个交易日的收盘价。
+    用 akshare stock_zh_a_hist 获取 pick_date 之后第一个交易日的开盘价。
+    结算逻辑：买入价=当日收盘，卖出价=次日开盘，模拟高开卖出。
     返回 float 或 None（数据不足 / 接口异常）。
     """
     import akshare as ak
@@ -205,18 +206,17 @@ def _get_next_trading_close(code: str, pick_date: str) -> float | None:
             return None
 
         # 列名可能是中文或英文，统一处理
-        date_col  = "日期"  if "日期"  in df.columns else df.columns[0]
-        close_col = "收盘"  if "收盘"  in df.columns else "close"
-        if close_col not in df.columns:
-            # 尝试 akshare 英文列名
+        date_col = "日期" if "日期" in df.columns else df.columns[0]
+        open_col = "开盘" if "开盘" in df.columns else "open"
+        if open_col not in df.columns:
             for c in df.columns:
-                if "close" in c.lower():
-                    close_col = c
+                if "open" in c.lower():
+                    open_col = c
                     break
 
         df = df.sort_values(date_col)
-        close_val = pd.to_numeric(df[close_col].iloc[0], errors="coerce")
-        return float(close_val) if pd.notna(close_val) else None
+        open_val = pd.to_numeric(df[open_col].iloc[0], errors="coerce")
+        return float(open_val) if pd.notna(open_val) else None
 
     except Exception:
         return None
@@ -225,9 +225,11 @@ def _get_next_trading_close(code: str, pick_date: str) -> float | None:
 def fill_results() -> int:
     """
     遍历历史 CSV，对所有 result_pct 为 NaN 且推荐日期早于今天的行，
-    查询次日收盘价并计算：
-        result_pct = (close - price) / price * 100
-        win        = result_pct > 0
+    查询次日开盘价并计算（买入价=当日收盘，卖出价=次日开盘）：
+        raw_pct        = (open_next - price) / price * 100
+        effective_pct  = clamp(raw_pct, -3.0, +3.0)
+        pnl            = position * effective_pct / 100
+        win            = effective_pct > 0
 
     返回本次填充的行数。
     """
@@ -250,25 +252,23 @@ def fill_results() -> int:
     capital = get_current_capital()
 
     for idx, row in pending.iterrows():
-        close = _get_next_trading_close(str(row["code"]), str(row["date"]))
-        if close is None:
+        open_price = _get_next_trading_open(str(row["code"]), str(row["date"]))
+        if open_price is None:
             continue
         price = float(row["price"])
         if price <= 0:
             continue
-        pct = round((close - price) / price * 100, 2)
-
-        # 止损触发：-3% 按实际止损价计算
-        effective_pct = max(pct, -3.0)
+        raw_pct = (open_price - price) / price * 100
+        # 次日开盘涨停/跌停 clamped to ±3%（目标+3%止盈，止损-3%）
+        effective_pct = round(max(-3.0, min(3.0, raw_pct)), 2)
 
         position = float(row.get("position", 0) or 0)
         pnl = round(position * effective_pct / 100, 2)
 
-        history.at[idx, "result_pct"] = pct
+        history.at[idx, "result_pct"] = effective_pct
         history.at[idx, "pnl"]        = pnl
-        history.at[idx, "win"]        = float(pct > 0)
+        history.at[idx, "win"]        = float(effective_pct > 0)
 
-        # 更新资金：归还本金 + 盈亏
         capital = round(capital + pnl, 2)
         filled += 1
 
@@ -303,15 +303,23 @@ def get_stats() -> dict:
     if settled.empty:
         return {
             "total_picks":         total_picks,
+            "settled_picks":       0,
             "win_rate":            0.0,
+            "win_rate_fee":        0.0,
+            "win_rate_3pct":       0.0,
             "avg_return":          0.0,
             "max_win":             0.0,
             "max_loss":            0.0,
             "recent_10_win_rate":  0.0,
         }
 
-    wins = (settled["result_pct"] > 0).sum()
-    win_rate = round(wins / len(settled) * 100, 1)
+    n_settled = len(settled)
+    wins        = (settled["result_pct"] > 0).sum()
+    wins_fee    = (settled["result_pct"] > 0.15).sum()   # 扣手续费后盈利
+    wins_3pct   = (settled["result_pct"] >= 3.0).sum()   # 达到目标收益
+    win_rate      = round(wins      / n_settled * 100, 1)
+    win_rate_fee  = round(wins_fee  / n_settled * 100, 1)
+    win_rate_3pct = round(wins_3pct / n_settled * 100, 1)
     avg_return = round(settled["result_pct"].mean(), 2)
     max_win = round(settled["result_pct"].max(), 2)
     max_loss = round(settled["result_pct"].min(), 2)
@@ -323,7 +331,10 @@ def get_stats() -> dict:
 
     return {
         "total_picks":         total_picks,
+        "settled_picks":       n_settled,
         "win_rate":            win_rate,
+        "win_rate_fee":        win_rate_fee,
+        "win_rate_3pct":       win_rate_3pct,
         "avg_return":          avg_return,
         "max_win":             max_win,
         "max_loss":            max_loss,
