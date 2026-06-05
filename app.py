@@ -752,6 +752,141 @@ with tab_short:
             unsafe_allow_html=True,
         )
 
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 情绪温度计 ────────────────────────────────────────────
+    st.markdown('<div class="short-rank" style="font-size:13px;color:#f5f5f7;font-weight:600;'
+                'margin-bottom:10px;letter-spacing:0">市场情绪温度计</div>', unsafe_allow_html=True)
+
+    lu   = sentiment.get("limit_up", 0)
+    ld   = sentiment.get("limit_down", 1)
+    ratio = sentiment.get("ratio", 0)
+    slvl  = sentiment.get("sentiment_level", 0)
+    slbl  = sentiment.get("sentiment_label", "—")
+
+    # 炸板率：需要从涨停池拿，用已有 sentiment 里 limit_up 估算
+    # 情绪颜色
+    if slvl >= 4:
+        emo_color = "#30d158"
+        emo_bg    = "#0a2a1a"
+        emo_advice = "积极入场，可适当加仓"
+    elif slvl == 3:
+        emo_color = "#ffd60a"
+        emo_bg    = "#2a2000"
+        emo_advice = "中性偏多，谨慎选股"
+    elif slvl == 2:
+        emo_color = "#ff9f0a"
+        emo_bg    = "#2a1800"
+        emo_advice = "市场偏弱，轻仓或观望"
+    else:
+        emo_color = "#ff453a"
+        emo_bg    = "#2a0a0a"
+        emo_advice = "情绪极差，建议空仓"
+
+    # 温度条：满格=涨跌比10，实际用 ratio 映射到 0-100%
+    bar_pct = min(int(float(ratio) / 10 * 100), 100) if ratio else 0
+
+    emo_cols = st.columns([2, 1, 1, 1, 1])
+    with emo_cols[0]:
+        st.markdown(f"""
+<div style="background:{emo_bg};border-radius:12px;padding:14px 18px;">
+  <div style="font-size:11px;color:#636366;text-transform:uppercase;letter-spacing:1px">情绪等级</div>
+  <div style="font-size:24px;font-weight:700;color:{emo_color};margin:4px 0">{slbl}</div>
+  <div style="background:#2c2c2e;border-radius:3px;height:4px;margin:6px 0">
+    <div style="width:{bar_pct}%;height:4px;background:{emo_color};border-radius:3px"></div>
+  </div>
+  <div style="font-size:11px;color:#8e8e93">{emo_advice}</div>
+</div>
+""", unsafe_allow_html=True)
+    with emo_cols[1]:
+        st.markdown(f"""
+<div style="background:#1c1c1e;border-radius:12px;padding:14px 18px;text-align:center">
+  <div style="font-size:11px;color:#636366;text-transform:uppercase;letter-spacing:1px">涨停</div>
+  <div style="font-size:28px;font-weight:700;color:#30d158;margin-top:6px">{lu}</div>
+</div>
+""", unsafe_allow_html=True)
+    with emo_cols[2]:
+        st.markdown(f"""
+<div style="background:#1c1c1e;border-radius:12px;padding:14px 18px;text-align:center">
+  <div style="font-size:11px;color:#636366;text-transform:uppercase;letter-spacing:1px">跌停</div>
+  <div style="font-size:28px;font-weight:700;color:#ff453a;margin-top:6px">{ld}</div>
+</div>
+""", unsafe_allow_html=True)
+    with emo_cols[3]:
+        st.markdown(f"""
+<div style="background:#1c1c1e;border-radius:12px;padding:14px 18px;text-align:center">
+  <div style="font-size:11px;color:#636366;text-transform:uppercase;letter-spacing:1px">涨跌比</div>
+  <div style="font-size:28px;font-weight:700;color:{emo_color};margin-top:6px">{ratio}</div>
+</div>
+""", unsafe_allow_html=True)
+    with emo_cols[4]:
+        # 入场信号灯
+        signal_icon = "🟢" if slvl >= 4 else "🟡" if slvl == 3 else "🔴"
+        signal_text = "可以入场" if slvl >= 4 else "谨慎" if slvl == 3 else "空仓"
+        st.markdown(f"""
+<div style="background:#1c1c1e;border-radius:12px;padding:14px 18px;text-align:center">
+  <div style="font-size:11px;color:#636366;text-transform:uppercase;letter-spacing:1px">入场信号</div>
+  <div style="font-size:28px;margin-top:6px">{signal_icon}</div>
+  <div style="font-size:12px;color:{emo_color};font-weight:600">{signal_text}</div>
+</div>
+""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 量比异动预警 ──────────────────────────────────────────
+    st.markdown('<div class="short-rank" style="font-size:13px;color:#f5f5f7;font-weight:600;'
+                'margin-bottom:10px;letter-spacing:0">量比异动预警（主板 ≥3x）</div>',
+                unsafe_allow_html=True)
+
+    @st.cache_data(ttl=300, show_spinner="扫描量比异动...")
+    def load_vol_surge(_key: str):
+        """全市场扫描量比≥3x的主板股票，5分钟缓存。"""
+        try:
+            import akshare as _ak
+            spot = _ak.stock_zh_a_spot_em()
+            spot["代码"] = spot["代码"].astype(str).str.zfill(6)
+            # 仅主板
+            spot = spot[spot["代码"].apply(lambda c: c.startswith("60") or c.startswith("00"))]
+            spot = spot[~spot["名称"].str.contains("ST|退市", na=False)]
+            for col in ["量比", "涨跌幅", "最新价", "换手率"]:
+                if col in spot.columns:
+                    spot[col] = pd.to_numeric(spot[col], errors="coerce")
+            spot = spot[spot["量比"] >= 3].sort_values("量比", ascending=False).head(15)
+            return spot[["代码", "名称", "最新价", "涨跌幅", "量比", "换手率"]].reset_index(drop=True)
+        except Exception:
+            return pd.DataFrame()
+
+    _vol_key = datetime.now().strftime("%Y%m%d%H%M")[:-1]
+    df_surge = load_vol_surge(_vol_key)
+
+    if not df_surge.empty:
+        surge_cols = st.columns(5)
+        for i, (_, r) in enumerate(df_surge.head(10).iterrows()):
+            pct_v = r.get("涨跌幅", 0) or 0
+            vr_v  = r.get("量比", 0) or 0
+            pct_s = f"+{pct_v:.1f}%" if pct_v >= 0 else f"{pct_v:.1f}%"
+            pct_c = "#30d158" if pct_v >= 0 else "#ff453a"
+            # 量比越高越绿
+            vr_c  = "#30d158" if vr_v >= 5 else "#ffd60a" if vr_v >= 3 else "#f5f5f7"
+            with surge_cols[i % 5]:
+                st.markdown(f"""
+<div style="background:#1c1c1e;border-radius:12px;padding:12px 14px;margin-bottom:8px">
+  <div style="font-size:10px;color:#636366">{r['代码']}</div>
+  <div style="font-size:14px;font-weight:600;color:#f5f5f7">{r['名称']}</div>
+  <div style="font-size:18px;font-weight:600;color:#f5f5f7;margin:3px 0">
+    ¥{r['最新价']:.2f} <span style="font-size:12px;color:{pct_c}">{pct_s}</span>
+  </div>
+  <div style="font-size:12px;color:{vr_c};font-weight:600">量比 {vr_v:.1f}x</div>
+  <div style="font-size:10px;color:#636366">换手 {r.get('换手率', 0) or 0:.1f}%</div>
+</div>
+""", unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div style="color:#636366;font-size:12px">暂无量比≥3x的主板异动股，'
+            '或数据获取失败。</div>',
+            unsafe_allow_html=True,
+        )
+
 
 # ════════════════════════════════════════════════════════════
 # Tab 6：电力板块
