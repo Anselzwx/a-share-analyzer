@@ -645,7 +645,7 @@ with tab_picks:
 
     @st.cache_data(ttl=900, show_spinner="热门板块分析中（约30秒）...")
     def load_sector_picks():
-        return pick_hot_sectors(top_n_sectors=5, stocks_per_sector=4)
+        return pick_hot_sectors(top_n_sectors=8, stocks_per_sector=4)
 
     with st.spinner("加载中..."):
         try:
