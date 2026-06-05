@@ -213,112 +213,215 @@ with tab_hist:
                 st.dataframe(summary, use_container_width=True)
 
 # ════════════════════════════════════════════════════════════
-# Tab 3：自选股（持仓监控）
+# Tab 3：持仓监控
 # ════════════════════════════════════════════════════════════
 with tab_watch:
-    st.subheader("📋 持仓监控")
-    st.caption("实时盈亏 | 止损预警 | K线走势")
 
-    @st.cache_data(ttl=600, show_spinner="正在拉取持仓数据...")
+    # ── Apple风格CSS ─────────────────────────────────────────
+    st.markdown("""
+<style>
+.pos-card {
+    background: #1c1c1e;
+    border-radius: 16px;
+    padding: 20px 24px;
+    margin-bottom: 12px;
+}
+.pos-name { font-size: 13px; color: #8e8e93; letter-spacing: 0.5px; margin-bottom: 4px; }
+.pos-price { font-size: 32px; font-weight: 600; color: #f5f5f7; letter-spacing: -1px; }
+.pos-pnl-up { font-size: 15px; font-weight: 500; color: #30d158; }
+.pos-pnl-down { font-size: 15px; font-weight: 500; color: #ff453a; }
+.pos-meta { font-size: 12px; color: #636366; margin-top: 8px; }
+.signal-bull { background: #0a2a1a; border-left: 3px solid #30d158;
+               padding: 6px 12px; border-radius: 8px; font-size: 12px; color: #30d158; margin-top: 8px; }
+.signal-bear { background: #2a0a0a; border-left: 3px solid #ff453a;
+               padding: 6px 12px; border-radius: 8px; font-size: 12px; color: #ff453a; margin-top: 8px; }
+.signal-neutral { background: #1c1c1e; border-left: 3px solid #636366;
+                  padding: 6px 12px; border-radius: 8px; font-size: 12px; color: #8e8e93; margin-top: 8px; }
+.section-title { font-size: 22px; font-weight: 600; color: #f5f5f7;
+                 letter-spacing: -0.5px; margin: 28px 0 16px 0; }
+.summary-bar { background: #1c1c1e; border-radius: 12px; padding: 16px 24px;
+               display: flex; gap: 40px; margin-bottom: 24px; }
+.summary-item { text-align: center; }
+.summary-label { font-size: 11px; color: #636366; text-transform: uppercase; letter-spacing: 1px; }
+.summary-value { font-size: 20px; font-weight: 600; color: #f5f5f7; }
+.plan-table { width: 100%; border-collapse: collapse; }
+.plan-table th { font-size: 11px; color: #636366; text-transform: uppercase;
+                 letter-spacing: 1px; padding: 8px 12px; border-bottom: 1px solid #2c2c2e; }
+.plan-table td { font-size: 14px; color: #f5f5f7; padding: 10px 12px;
+                 border-bottom: 1px solid #1c1c1e; }
+</style>
+""", unsafe_allow_html=True)
+
+    # ── 数据加载 ─────────────────────────────────────────────
+    @st.cache_data(ttl=600, show_spinner="")
     def load_watchlist(watchlist_key: str):
         return get_all_watchlist_hist(start="20260101")
 
     _watchlist_key = ",".join(sorted(WATCHLIST.keys())) + "_" + datetime.now().strftime("%Y%m%d%H")
     df_watch = load_watchlist(_watchlist_key)
 
+    now_time = datetime.now()
+    is_trading = (now_time.weekday() < 5 and
+                  ((9 <= now_time.hour < 15) or (now_time.hour == 15 and now_time.minute == 0)))
+
+    # 交易时段提醒
+    if is_trading:
+        hour, minute = now_time.hour, now_time.minute
+        if hour == 14 and 44 <= minute <= 55:
+            st.markdown('<div style="background:#0a2a1a;border-radius:10px;padding:12px 20px;'
+                        'color:#30d158;font-weight:600;font-size:14px;margin-bottom:16px;">'
+                        '⏰ 尾盘买入窗口 14:45–14:55，确认量能后可建仓</div>', unsafe_allow_html=True)
+        elif hour == 14 and minute >= 56:
+            st.markdown('<div style="background:#2a1a0a;border-radius:10px;padding:12px 20px;'
+                        'color:#ff9f0a;font-weight:600;font-size:14px;margin-bottom:16px;">'
+                        '⏰ 收盘集合竞价（14:57起不可撤单）</div>', unsafe_allow_html=True)
+        elif hour == 9 and minute <= 35:
+            st.markdown('<div style="background:#0a1a2a;border-radius:10px;padding:12px 20px;'
+                        'color:#0a84ff;font-weight:600;font-size:14px;margin-bottom:16px;">'
+                        '⏰ 开盘窗口：观察高开幅度，决定是否追入或止损</div>', unsafe_allow_html=True)
+
     if df_watch.empty:
         st.error("持仓数据获取失败")
-    else:
-        stats = compute_stock_stats(df_watch)
+        st.stop()
 
-        # ── 持仓盈亏卡片 ──────────────────────────────────────
-        st.markdown("#### 实时盈亏")
-        cols = st.columns(len(WATCHLIST))
-        total_pnl_pct = []
-        for col, (name, code) in zip(cols, WATCHLIST.items()):
-            cost = WATCHLIST_COST.get(name)
-            row = stats[stats["name"] == name]
-            if row.empty or cost is None:
-                continue
-            now = row["最新价"].iloc[0]
-            pnl_pct = (now / cost - 1) * 100
-            total_pnl_pct.append(pnl_pct)
-            delta_str = f"{pnl_pct:+.2f}%"
-            color = "inverse" if pnl_pct >= 0 else "normal"
-            with col:
-                st.metric(
-                    label=f"{name}（{code}）",
-                    value=f"¥{now:.2f}",
-                    delta=delta_str,
-                    delta_color=color,
-                )
-                st.caption(f"成本 ¥{cost:.3f}")
-                # 止损预警
-                stop_loss = cost * 0.97
-                if now <= stop_loss:
-                    st.error(f"⚠️ 触发止损！止损价 {stop_loss:.2f}")
-                elif now <= cost * 0.98:
-                    st.warning(f"接近止损 {stop_loss:.2f}")
+    stats = compute_stock_stats(df_watch)
 
-        # 总盈亏摘要
-        if total_pnl_pct:
-            avg_pnl = sum(total_pnl_pct) / len(total_pnl_pct)
-            color = "🟢" if avg_pnl >= 0 else "🔴"
-            st.markdown(f"**{color} 持仓平均盈亏：{avg_pnl:+.2f}%**")
+    # ── 总览摘要栏 ────────────────────────────────────────────
+    pnl_list = []
+    for name in WATCHLIST:
+        cost = WATCHLIST_COST.get(name)
+        row = stats[stats["name"] == name]
+        if not row.empty and cost:
+            pnl_list.append((row["最新价"].iloc[0] / cost - 1) * 100)
 
-        st.divider()
+    if pnl_list:
+        avg_pnl = sum(pnl_list) / len(pnl_list)
+        winning = sum(1 for p in pnl_list if p >= 0)
+        losing = len(pnl_list) - winning
+        pnl_color = "#30d158" if avg_pnl >= 0 else "#ff453a"
+        st.markdown(f"""
+<div class="summary-bar">
+  <div class="summary-item">
+    <div class="summary-label">平均盈亏</div>
+    <div class="summary-value" style="color:{pnl_color}">{avg_pnl:+.2f}%</div>
+  </div>
+  <div class="summary-item">
+    <div class="summary-label">盈利 / 亏损</div>
+    <div class="summary-value">{winning} / {losing}</div>
+  </div>
+  <div class="summary-item">
+    <div class="summary-label">持仓数</div>
+    <div class="summary-value">{len(pnl_list)}</div>
+  </div>
+  <div class="summary-item">
+    <div class="summary-label">更新时间</div>
+    <div class="summary-value" style="font-size:14px">{now_time.strftime('%H:%M')}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
-        # ── K线图 ─────────────────────────────────────────────
+    # ── 持仓卡片 ──────────────────────────────────────────────
+    st.markdown('<div class="section-title">持仓</div>', unsafe_allow_html=True)
+    cols = st.columns(len(WATCHLIST))
+    for col, (name, code) in zip(cols, WATCHLIST.items()):
+        cost = WATCHLIST_COST.get(name)
+        row = stats[stats["name"] == name]
+        if row.empty or cost is None:
+            continue
+        price = row["最新价"].iloc[0]
+        pnl = (price / cost - 1) * 100
+        today_pct = row["涨跌幅%"].iloc[0] if "涨跌幅%" in row.columns else 0
+        pnl_class = "pos-pnl-up" if pnl >= 0 else "pos-pnl-down"
+        pnl_sign = "+" if pnl >= 0 else ""
+        stop = cost * 0.97
+        target = cost * 1.04
+
+        # 信号判断
+        if price <= stop:
+            signal_class = "signal-bear"
+            signal_text = "触发止损 — 立即卖出"
+        elif price <= cost * 0.985:
+            signal_class = "signal-bear"
+            signal_text = f"接近止损 {stop:.2f}"
+        elif pnl >= 4:
+            signal_class = "signal-bull"
+            signal_text = f"达到目标 +4% — 考虑卖出"
+        elif pnl >= 0:
+            signal_class = "signal-bull"
+            signal_text = "持有中"
+        else:
+            signal_class = "signal-neutral"
+            signal_text = "观察中"
+
+        with col:
+            st.markdown(f"""
+<div class="pos-card">
+  <div class="pos-name">{name} · {code}</div>
+  <div class="pos-price">¥{price:.2f}</div>
+  <div class="{pnl_class}">{pnl_sign}{pnl:.2f}% &nbsp;·&nbsp; 今日 {today_pct:+.2f}%</div>
+  <div class="pos-meta">成本 ¥{cost:.3f} &nbsp;|&nbsp; 止损 ¥{stop:.2f} &nbsp;|&nbsp; 目标 ¥{target:.2f}</div>
+  <div class="{signal_class}">{signal_text}</div>
+</div>
+""", unsafe_allow_html=True)
+
+    # ── 明日操作计划 ──────────────────────────────────────────
+    st.markdown('<div class="section-title">明日操作计划</div>', unsafe_allow_html=True)
+    plan_data = {}
+    for name in WATCHLIST:
+        cost = WATCHLIST_COST.get(name, 0)
+        plan_data[name] = {
+            "止损价": f"¥{cost*0.97:.2f}",
+            "目标价": f"¥{cost*1.04:.2f}",
+            "操作": "开盘观察" if cost > 0 else "跟踪",
+        }
+
+    plan_rows = ""
+    for name, p in plan_data.items():
+        plan_rows += f"<tr><td>{name}</td><td>{p['止损价']}</td><td>{p['目标价']}</td><td>{p['操作']}</td></tr>"
+
+    st.markdown(f"""
+<table class="plan-table">
+  <thead><tr>
+    <th>股票</th><th>止损价（-3%）</th><th>目标价（+4%）</th><th>操作方向</th>
+  </tr></thead>
+  <tbody>{plan_rows}</tbody>
+</table>
+""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── K线（折叠） ───────────────────────────────────────────
+    with st.expander("查看K线图", expanded=False):
         name_list = list(WATCHLIST.keys())
-        selected_stock = st.radio("查看K线", name_list, horizontal=True)
+        selected_stock = st.radio("", name_list, horizontal=True, label_visibility="collapsed")
         code = WATCHLIST[selected_stock]
         cost = WATCHLIST_COST.get(selected_stock)
         df_one = df_watch[df_watch["code"] == code]
         fig_k = stock_kline(df_one, selected_stock)
-        # 加买入成本线
         if cost:
-            fig_k.add_hline(
-                y=cost, line_dash="dash", line_color="yellow", line_width=1.5,
-                annotation_text=f"成本 {cost:.3f}", annotation_position="right",
-            )
-            fig_k.add_hline(
-                y=cost * 0.97, line_dash="dot", line_color="red", line_width=1,
-                annotation_text=f"止损 {cost*0.97:.2f}", annotation_position="right",
-            )
+            fig_k.add_hline(y=cost, line_dash="dash", line_color="#ffd60a", line_width=1.5,
+                            annotation_text=f"成本 {cost:.3f}", annotation_position="right")
+            fig_k.add_hline(y=cost*0.97, line_dash="dot", line_color="#ff453a", line_width=1,
+                            annotation_text=f"止损 {cost*0.97:.2f}", annotation_position="right")
+            fig_k.add_hline(y=cost*1.04, line_dash="dot", line_color="#30d158", line_width=1,
+                            annotation_text=f"目标 {cost*1.04:.2f}", annotation_position="right")
+        fig_k.update_layout(
+            plot_bgcolor="#000000", paper_bgcolor="#000000",
+            font=dict(color="#8e8e93"), margin=dict(t=40, b=40),
+        )
         st.plotly_chart(fig_k, use_container_width=True)
 
-        st.divider()
-
-        # ── 相对表现对比 ──────────────────────────────────────
-        st.subheader("相对买入成本表现对比")
-        fig_norm = go.Figure()
-        for name, grp in df_watch.groupby("name"):
-            grp = grp.sort_values("date")
-            cost = WATCHLIST_COST.get(name, grp["close"].iloc[0])
-            fig_norm.add_trace(go.Scatter(
-                x=grp["date"], y=((grp["close"] / cost - 1) * 100),
-                mode="lines", name=name,
-                hovertemplate=f"<b>{name}</b><br>%{{x|%Y-%m-%d}}<br>相对成本: %{{y:+.2f}}%<extra></extra>",
-            ))
-        fig_norm.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1,
-                           annotation_text="成本线")
-        fig_norm.add_hline(y=-3, line_dash="dot", line_color="red", line_width=1,
-                           annotation_text="止损-3%")
-        fig_norm.update_layout(
-            height=380, xaxis_title="日期", yaxis_title="相对成本涨跌幅%",
-            hovermode="x unified",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            margin=dict(t=60, b=40),
-        )
-        st.plotly_chart(fig_norm, use_container_width=True)
-
-        with st.expander("持仓明细"):
-            detail = stats.copy()
-            detail["买入成本"] = detail["name"].map(WATCHLIST_COST)
-            detail["盈亏%"] = ((detail["最新价"] / detail["买入成本"]) - 1) * 100
-            detail["盈亏%"] = detail["盈亏%"].round(2)
-            detail["止损价"] = (detail["买入成本"] * 0.97).round(3)
-            st.dataframe(detail.set_index("name"), use_container_width=True)
+    # ── 操作记录 ──────────────────────────────────────────────
+    with st.expander("操作记录", expanded=False):
+        st.markdown("""
+<table class="plan-table">
+  <thead><tr><th>日期</th><th>股票</th><th>操作</th><th>价格</th><th>盈亏</th></tr></thead>
+  <tbody>
+    <tr><td>2026-06-04</td><td>大唐电信</td><td>买入</td><td>¥9.105</td><td>—</td></tr>
+    <tr><td>2026-06-04</td><td>中兴通讯</td><td>买入</td><td>¥39.510</td><td>—</td></tr>
+  </tbody>
+</table>
+""", unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════
 # Tab 4：热门精选
