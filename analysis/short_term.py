@@ -399,7 +399,7 @@ def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:
 
     records = []
     rows = [row for _, row in df_gainers.iterrows()]
-    with ThreadPoolExecutor(max_workers=12) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(_process, row) for row in rows]
         for future in as_completed(futures):
             res = future.result()

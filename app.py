@@ -617,9 +617,9 @@ with tab_short:
         "- 仓位：单只不超过总仓位 20%，最多同时持3只"
     )
 
-    @st.cache_data(ttl=900, show_spinner="正在筛选超短线候选股（约30-60秒）...")
+    @st.cache_data(ttl=900, show_spinner="正在筛选超短线候选股（约20-30秒）...")
     def load_short_picks():
-        return pick_short_term_top5(max_candidates=80)
+        return pick_short_term_top5(max_candidates=40)
 
     if st.button("🔄 重新分析", key="refresh_short"):
         st.cache_data.clear()
