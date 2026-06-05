@@ -252,13 +252,107 @@ with tab_watch:
 </style>
 """, unsafe_allow_html=True)
 
+    # ── 一键刷新 + 情绪显示 ──────────────────────────────────
+    top_row = st.columns([1, 1, 1, 1, 2])
+    with top_row[4]:
+        if st.button("↻  立刻刷新", key="watch_refresh", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    # 市场情绪（直接读已加载的sentiment）
+    sent_level = sentiment.get("sentiment_level", 0)
+    sent_label = sentiment.get("sentiment_label", "—")
+    lu = sentiment.get("limit_up", 0)
+    ld = sentiment.get("limit_down", 1)
+    ratio = sentiment.get("ratio", 0)
+    sent_color = (
+        "#30d158" if sent_level >= 4 else
+        "#ffd60a" if sent_level == 3 else
+        "#ff9f0a" if sent_level == 2 else
+        "#ff453a"
+    )
+    with top_row[0]:
+        st.markdown(f'<div class="summary-label">市场情绪</div>'
+                    f'<div class="summary-value" style="color:{sent_color};font-size:16px">{sent_label}</div>',
+                    unsafe_allow_html=True)
+    with top_row[1]:
+        st.markdown(f'<div class="summary-label">涨停</div>'
+                    f'<div class="summary-value" style="color:#30d158;font-size:16px">{lu}</div>',
+                    unsafe_allow_html=True)
+    with top_row[2]:
+        st.markdown(f'<div class="summary-label">跌停</div>'
+                    f'<div class="summary-value" style="color:#ff453a;font-size:16px">{ld}</div>',
+                    unsafe_allow_html=True)
+    with top_row[3]:
+        st.markdown(f'<div class="summary-label">涨跌比</div>'
+                    f'<div class="summary-value" style="color:{sent_color};font-size:16px">{ratio}</div>',
+                    unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
     # ── 数据加载 ─────────────────────────────────────────────
     @st.cache_data(ttl=600, show_spinner="")
     def load_watchlist(watchlist_key: str):
         return get_all_watchlist_hist(start="20260101")
 
+    @st.cache_data(ttl=300, show_spinner="")
+    def load_realtime_vol(codes_key: str):
+        """拉实时量比，5分钟缓存。优先东财spot接口（含量比字段），失败降级新浪。"""
+        import akshare as _ak
+        codes = list(WATCHLIST.values())
+        result = {}
+        try:
+            spot = _ak.stock_zh_a_spot_em()
+            # 东财字段：代码、名称、最新价、涨跌幅、量比
+            code_col = "代码" if "代码" in spot.columns else spot.columns[1]
+            price_col = "最新价" if "最新价" in spot.columns else None
+            pct_col = "涨跌幅" if "涨跌幅" in spot.columns else None
+            vr_col = "量比" if "量比" in spot.columns else None
+            spot_sub = spot[spot[code_col].isin(codes)]
+            for _, r in spot_sub.iterrows():
+                code = str(r[code_col])
+                result[code] = {
+                    "price": float(r[price_col]) if price_col and r[price_col] else 0,
+                    "pct":   float(r[pct_col])   if pct_col   and r[pct_col]   else 0,
+                    "vol_ratio": round(float(r[vr_col]), 2) if vr_col and r[vr_col] else 0,
+                }
+            if result:
+                return result
+        except Exception:
+            pass
+
+        # 降级：新浪实时（无量比字段，设为0）
+        import requests
+        syms = ",".join(
+            f"sh{c}" if c.startswith("6") else f"sz{c}"
+            for c in codes
+        )
+        try:
+            r = requests.get(
+                f"http://hq.sinajs.cn/list={syms}",
+                headers={"Referer": "http://finance.sina.com.cn", "User-Agent": "Mozilla/5.0"},
+                timeout=6,
+            )
+            r.encoding = "gbk"
+            for code, line in zip(codes, r.text.strip().splitlines()):
+                vals = line.split('"')[1].split(",")
+                if len(vals) < 32:
+                    continue
+                try:
+                    price = float(vals[3]) if vals[3] else 0
+                    yest_close = float(vals[2]) if vals[2] else 0
+                    pct = round((price / yest_close - 1) * 100, 2) if yest_close else 0
+                    result[code] = {"price": price, "pct": pct, "vol_ratio": 0}
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return result
+
     _watchlist_key = ",".join(sorted(WATCHLIST.keys())) + "_" + datetime.now().strftime("%Y%m%d%H")
+    _rt_key = ",".join(sorted(WATCHLIST.values())) + "_" + datetime.now().strftime("%Y%m%d%H%M")[:-1]
     df_watch = load_watchlist(_watchlist_key)
+    rt_data = load_realtime_vol(_rt_key)
 
     now_time = datetime.now()
     is_trading = (now_time.weekday() < 5 and
@@ -329,14 +423,22 @@ with tab_watch:
         if row.empty or cost is None:
             continue
         price = row["最新价"].iloc[0]
-        pnl = (price / cost - 1) * 100
         today_pct = row["涨跌幅%"].iloc[0] if "涨跌幅%" in row.columns else 0
-        pnl_class = "pos-pnl-up" if pnl >= 0 else "pos-pnl-down"
-        pnl_sign = "+" if pnl >= 0 else ""
         stop = cost * 0.97
         target = cost * 1.04
 
-        # 信号判断
+        # 优先用实时价格覆盖
+        rt_info = rt_data.get(code, {})
+        rt_price = rt_info.get("price", 0)
+        if rt_price > 0:
+            price = rt_price
+            today_pct = rt_info.get("pct", today_pct)
+
+        pnl = (price / cost - 1) * 100
+        pnl_class = "pos-pnl-up" if pnl >= 0 else "pos-pnl-down"
+        pnl_sign = "+" if pnl >= 0 else ""
+
+        # 信号判断（基于最新价）
         if price <= stop:
             signal_class = "signal-bear"
             signal_text = "触发止损 — 立即卖出"
@@ -352,6 +454,16 @@ with tab_watch:
         else:
             signal_class = "signal-neutral"
             signal_text = "观察中"
+        vol_ratio = rt_info.get("vol_ratio", 0)
+        if vol_ratio >= 2:
+            vr_color = "#30d158"
+        elif vol_ratio >= 1:
+            vr_color = "#f5f5f7"
+        elif vol_ratio > 0:
+            vr_color = "#ff453a"
+        else:
+            vr_color = "#636366"
+        vr_text = f'<span style="color:{vr_color};font-weight:600">{vol_ratio:.2f}x</span>' if vol_ratio > 0 else '<span style="color:#636366">—</span>'
 
         with col:
             st.markdown(f"""
@@ -360,6 +472,7 @@ with tab_watch:
   <div class="pos-price">¥{price:.2f}</div>
   <div class="{pnl_class}">{pnl_sign}{pnl:.2f}% &nbsp;·&nbsp; 今日 {today_pct:+.2f}%</div>
   <div class="pos-meta">成本 ¥{cost:.3f} &nbsp;|&nbsp; 止损 ¥{stop:.2f} &nbsp;|&nbsp; 目标 ¥{target:.2f}</div>
+  <div class="pos-meta" style="margin-top:6px">量比 {vr_text} &nbsp;·&nbsp; MA5 ¥{row["MA5"].iloc[0]:.2f} &nbsp;·&nbsp; MA20 ¥{row["MA20"].iloc[0]:.2f}</div>
   <div class="{signal_class}">{signal_text}</div>
 </div>
 """, unsafe_allow_html=True)
