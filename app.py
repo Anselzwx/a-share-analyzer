@@ -602,30 +602,63 @@ with tab_picks:
 # Tab 5：超短线（今买明卖）
 # ════════════════════════════════════════════════════════════
 with tab_short:
-    st.subheader("⚡ 超短线精选：今日买入，明日卖出")
-    st.caption(
-        "**仅限主板**（沪市60xxxx / 深市00xxxx），不含创业板和科创板。"
-        "筛选逻辑：今日放量上涨、EMA21向上、RSI健康、MACD/KDJ金叉优先，"
-        "隔夜持仓风险低。每15分钟刷新。"
-    )
+    st.markdown("""
+<style>
+.short-card {
+    background: #1c1c1e;
+    border-radius: 14px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
+}
+.short-rank { font-size: 11px; color: #636366; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 2px; }
+.short-name { font-size: 16px; font-weight: 600; color: #f5f5f7; }
+.short-code { font-size: 11px; color: #636366; margin-left: 6px; }
+.short-price { font-size: 26px; font-weight: 600; color: #f5f5f7; letter-spacing: -0.5px; margin: 4px 0; }
+.short-pct-up { color: #30d158; font-size: 13px; font-weight: 500; }
+.short-pct-dn { color: #ff453a; font-size: 13px; font-weight: 500; }
+.short-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 6px 0; }
+.short-tag { background: #2c2c2e; border-radius: 6px; padding: 2px 8px;
+             font-size: 11px; color: #ebebf5cc; }
+.short-tag-green { background: #0a2a1a; color: #30d158; }
+.short-tag-yellow { background: #2a2000; color: #ffd60a; }
+.short-tag-red { background: #2a0a0a; color: #ff453a; }
+.short-reason { font-size: 11px; color: #8e8e93; margin-top: 4px; line-height: 1.5; }
+.short-score-bar { height: 3px; border-radius: 2px; background: #2c2c2e; margin-top: 8px; }
+.short-strategy {
+    background: #1c1c1e;
+    border-radius: 12px;
+    padding: 12px 18px;
+    margin-bottom: 16px;
+    font-size: 12px;
+    color: #8e8e93;
+    line-height: 1.8;
+}
+.short-strategy b { color: #f5f5f7; }
+</style>
+""", unsafe_allow_html=True)
 
-    st.info(
-        "**策略说明**：\n"
-        "- 买入时机：尾盘（14:45 后）确认量能持续，分批建仓\n"
-        "- 卖出时机：次日开盘高开 1-2% 即可出，或早盘9:30-10:00 最强势时卖\n"
-        "- 止损：次日跌破今日开盘价立即止损，不拖\n"
-        "- 仓位：单只不超过总仓位 20%，最多同时持3只"
-    )
+    # ── 顶部：策略规则（紧凑一行）+ 刷新按钮 ────────────────
+    hdr_l, hdr_r = st.columns([5, 1])
+    with hdr_l:
+        st.markdown(
+            '<div class="short-strategy">'
+            '<b>买入</b> 尾盘14:45后确认量能 &nbsp;·&nbsp; '
+            '<b>卖出</b> 次日开盘高开1-2%即出 &nbsp;·&nbsp; '
+            '<b>止损</b> 跌破今日开盘价立即出 &nbsp;·&nbsp; '
+            '<b>仓位</b> 单只≤总仓位20%'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    with hdr_r:
+        if st.button("↻ 刷新", key="refresh_short", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
-    @st.cache_data(ttl=900, show_spinner="正在筛选超短线候选股（约20-30秒）...")
+    @st.cache_data(ttl=900, show_spinner="筛选超短线候选（约20秒）...")
     def load_short_picks():
         return pick_short_term_top5(max_candidates=40)
 
-    if st.button("🔄 重新分析", key="refresh_short"):
-        st.cache_data.clear()
-        st.rerun()
-
-    with st.spinner("正在从主板上涨股中筛选超短线机会..."):
+    with st.spinner("筛选中..."):
         try:
             df_short = load_short_picks()
             short_ok = not df_short.empty
@@ -634,50 +667,90 @@ with tab_short:
             short_ok = False
 
     if short_ok:
-        rank_icons = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        rank_labels = ["#1", "#2", "#3", "#4", "#5"]
+        cols_per_row = 5
+        card_cols = st.columns(cols_per_row)
+
         for i, (_, row) in enumerate(df_short.iterrows()):
-            with st.container():
-                pct_str = f"+{row['今日涨跌幅%']:.2f}%" if row['今日涨跌幅%'] >= 0 else f"{row['今日涨跌幅%']:.2f}%"
-                col_title, col_score = st.columns([4, 1])
-                with col_title:
-                    st.markdown(f"### {rank_icons[i]} {row['name']}（{row['code']}）")
-                with col_score:
-                    st.metric("综合得分", f"{row['综合得分']} / 100")
+            pct = row["今日涨跌幅%"]
+            pct_str = f"+{pct:.2f}%" if pct >= 0 else f"{pct:.2f}%"
+            pct_cls = "short-pct-up" if pct >= 0 else "short-pct-dn"
+            score = row["综合得分"]
+            score_w = min(int(score), 100)
+            score_color = "#30d158" if score >= 75 else "#ffd60a" if score >= 55 else "#ff453a"
 
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("最新价", f"¥{row['最新价']:.2f}", pct_str)
-                m2.metric("量比", f"{row['量比']}x")
-                m3.metric("RSI14", f"{row['RSI14']}")
-                m4.metric("60日区间位", f"{row['60日区间位%']}%")
+            # 标签
+            tags = []
+            vr = row["量比"]
+            if vr >= 2.5:
+                tags.append(('short-tag-green', f'量比{vr:.1f}x'))
+            elif vr >= 1.5:
+                tags.append(('short-tag', f'量比{vr:.1f}x'))
+            else:
+                tags.append(('short-tag-red', f'量比{vr:.1f}x'))
 
-                st.markdown(f"""
-<small>
-EMA21={row['EMA21']} 斜率{row['EMA21斜率%']:+.1f}% ｜
-KDJ({row['KDJ_K']:.0f}/{row['KDJ_D']:.0f}/{row['KDJ_J']:.0f}) ｜
-MACD: {row['MACD金叉']} ｜ KDJ金叉: {row['KDJ金叉']} ｜
-5日涨幅: {row['5日涨幅%']:.1f}%
-</small>
-""", unsafe_allow_html=True)
+            rsi = row["RSI14"]
+            if 45 <= rsi <= 68:
+                tags.append(('short-tag-green', f'RSI{rsi:.0f}'))
+            elif rsi > 75:
+                tags.append(('short-tag-red', f'RSI{rsi:.0f}'))
+            else:
+                tags.append(('short-tag', f'RSI{rsi:.0f}'))
 
-                st.success(f"**买入理由**：{row['买入理由']}")
-                if row['风险提示'] != "无明显风险":
-                    st.warning(f"**风险提示**：{row['风险提示']}")
-                st.divider()
+            if row["MACD金叉"] == "✅":
+                tags.append(('short-tag-green', 'MACD金叉'))
+            if row["KDJ金叉"] == "✅":
+                tags.append(('short-tag-green', 'KDJ金叉'))
 
-        with st.expander("查看完整评分明细"):
-            show_cols = ["name", "code", "最新价", "今日涨跌幅%", "量比",
-                         "RSI14", "EMA21斜率%", "60日区间位%", "5日涨幅%",
-                         "MACD金叉", "KDJ金叉", "近3日最大跌%", "综合得分", "买入理由", "风险提示"]
-            short_show = df_short[show_cols].copy()
-            short_show.index = [f"#{i+1}" for i in range(len(short_show))]
-            st.dataframe(short_show, use_container_width=True)
+            rp = row["60日区间位%"]
+            if rp < 50:
+                tags.append(('short-tag-green', f'低位{rp:.0f}%'))
+            elif rp >= 85:
+                tags.append(('short-tag-red', f'高位{rp:.0f}%'))
 
-        st.warning(
-            "⚠️ 超短线风险极高，隔夜持仓受消息面影响大。"
-            "严格止损，跌破今日开盘价立即卖出，不要抱侥幸心理。"
+            has_risk = row["风险提示"] != "无明显风险"
+            if has_risk:
+                tags.append(('short-tag-yellow', '⚠ 有风险'))
+
+            tags_html = "".join(
+                f'<span class="short-tag {cls}">{label}</span>'
+                for cls, label in tags
+            )
+
+            risk_line = (
+                f'<div class="short-reason" style="color:#ffd60a">'
+                f'⚠ {row["风险提示"]}</div>'
+                if has_risk else ""
+            )
+
+            card_html = f"""
+<div class="short-card">
+  <div class="short-rank">{rank_labels[i]} &nbsp;·&nbsp; {row['code']}</div>
+  <div><span class="short-name">{row['name']}</span></div>
+  <div class="short-price">¥{row['最新价']:.2f} <span class="{pct_cls}">{pct_str}</span></div>
+  <div class="short-tags">{tags_html}</div>
+  <div class="short-reason">{row['买入理由']}</div>
+  {risk_line}
+  <div class="short-score-bar">
+    <div style="width:{score_w}%;height:3px;background:{score_color};border-radius:2px"></div>
+  </div>
+  <div style="font-size:10px;color:#636366;margin-top:3px;text-align:right">{score:.0f}/100</div>
+</div>
+"""
+            with card_cols[i % cols_per_row]:
+                st.markdown(card_html, unsafe_allow_html=True)
+
+        st.markdown(
+            '<div style="font-size:11px;color:#636366;margin-top:8px">'
+            '⚠ 超短线风险极高，严格执行止损，跌破开盘价立即出。</div>',
+            unsafe_allow_html=True,
         )
     else:
-        st.warning("暂无合适的超短线候选，当前市场可能偏弱或数据获取失败。请稍后重试。")
+        st.markdown(
+            '<div style="color:#636366;font-size:13px;padding:20px 0">'
+            '暂无合适候选，市场偏弱或数据获取失败，请稍后刷新。</div>',
+            unsafe_allow_html=True,
+        )
 
 
 # ════════════════════════════════════════════════════════════
