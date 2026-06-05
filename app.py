@@ -96,7 +96,7 @@ st.divider()
 # ── 主 Tab ────────────────────────────────────────────────────
 tab_today, tab_hist, tab_watch, tab_picks, tab_short, tab_power, tab_semi, tab_optical, tab_space, tab_auto, tab_ml = st.tabs(
     ["今日资金流向", "历史趋势对比", "自选股", "🔥 热门精选",
-     "⚡ 超短线", "⚡ 电力板块", "🔬 半导体板块", "💡 光模块", "🚀 商业航天", "🚗 智能驾驶",
+     "📈 超短线", "⚡ 电力板块", "🔬 半导体板块", "💡 光模块", "🚀 商业航天", "🚗 智能驾驶",
      "🤖 ML 涨停预测"]
 )
 
