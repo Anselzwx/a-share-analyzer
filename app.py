@@ -1057,6 +1057,33 @@ with tab_short:
     def load_short_picks():
         return pick_short_term_top5(max_candidates=40)
 
+    @st.cache_data(ttl=120)
+    def load_intraday(code: str):
+        """获取今日分时数据，返回 DataFrame: time, price, avg_price"""
+        import requests, json
+        secid = f"1.{code}" if code.startswith("6") else f"0.{code}"
+        try:
+            url = (
+                "https://push2.eastmoney.com/api/qt/stock/trends2/get"
+                f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11"
+                "&fields2=f51,f52,f53,f54,f55,f56,f57,f58"
+                "&iscr=0&ndays=1"
+            )
+            r = requests.get(url, timeout=6,
+                             headers={"User-Agent": "Mozilla/5.0",
+                                      "Referer": "https://quote.eastmoney.com"})
+            data = r.json()["data"]["trends"]
+            rows = []
+            for item in data:
+                parts = item.split(",")
+                if len(parts) < 3:
+                    continue
+                rows.append({"time": parts[0][-5:], "price": float(parts[2]),
+                             "avg_price": float(parts[7]) if len(parts) > 7 else None})
+            return pd.DataFrame(rows)
+        except Exception:
+            return pd.DataFrame()
+
     with st.spinner("筛选中..."):
         try:
             df_short = load_short_picks()
@@ -1174,6 +1201,50 @@ with tab_short:
 """
             with card_cols[i % cols_per_row]:
                 st.markdown(card_html, unsafe_allow_html=True)
+
+        # ── 分时图（每只股票一行）────────────────────────────
+        st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
+        for _, row in df_short.iterrows():
+            code = row["code"]
+            name = row["name"]
+            df_min = load_intraday(code)
+            if df_min.empty:
+                continue
+            import plotly.graph_objects as go
+            fig_min = go.Figure()
+            fig_min.add_trace(go.Scatter(
+                x=df_min["time"], y=df_min["price"],
+                mode="lines", name="价格",
+                line=dict(color="#4da6ff", width=1.5),
+                fill="tozeroy",
+                fillcolor="rgba(77,166,255,0.08)",
+            ))
+            if "avg_price" in df_min.columns and df_min["avg_price"].notna().any():
+                fig_min.add_trace(go.Scatter(
+                    x=df_min["time"], y=df_min["avg_price"],
+                    mode="lines", name="均价",
+                    line=dict(color="#ffd60a", width=1, dash="dot"),
+                ))
+            pct = row["今日涨跌幅%"]
+            pct_str = f"+{pct:.2f}%" if pct >= 0 else f"{pct:.2f}%"
+            fig_min.update_layout(
+                title=dict(text=f"{name}  ¥{row['最新价']:.2f}  {pct_str}",
+                           font=dict(size=13, color="#f5f5f7"), x=0.01),
+                paper_bgcolor="#0a0a0f",
+                plot_bgcolor="#0d0d14",
+                height=160,
+                margin=dict(l=40, r=20, t=32, b=24),
+                xaxis=dict(showgrid=False, tickfont=dict(size=10, color="#636366"),
+                           tickvals=["09:30","10:00","10:30","11:00","11:30",
+                                     "13:00","13:30","14:00","14:30","15:00"]),
+                yaxis=dict(showgrid=True, gridcolor="#1c1c2e",
+                           tickfont=dict(size=10, color="#636366"), side="right"),
+                legend=dict(orientation="h", x=1, xanchor="right", y=1.15,
+                            font=dict(size=10, color="#8e8e93"),
+                            bgcolor="rgba(0,0,0,0)"),
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_min, use_container_width=True, config={"displayModeBar": False})
 
         st.markdown(
             '<div style="font-size:11px;color:#636366;margin-top:8px">'
