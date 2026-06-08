@@ -883,6 +883,16 @@ with tab_picks:
     st.markdown("<br>", unsafe_allow_html=True)
 
     if has_data:
+        # 合并两策略净值曲线用于展示
+        _curve_frames = []
+        for _src, _clr in zip(_sources, ["#00d4aa", "#4da6ff"]):
+            _c = _src_data[_src]["curve_df"]
+            if not _c.empty:
+                _c = _c.copy()
+                _c["source"] = _src
+                _c["color"]  = _clr
+                _curve_frames.append(_c)
+        curve_df = pd.concat(_curve_frames, ignore_index=True) if _curve_frames else pd.DataFrame()
 
         chart_l, chart_r = st.columns([3, 1])
 
@@ -891,15 +901,15 @@ with tab_picks:
             st.markdown('<div class="bb-section">累计净值曲线</div>', unsafe_allow_html=True)
             if not curve_df.empty:
                 fig_nav = go.Figure()
-                # 净值曲线
-                fig_nav.add_trace(go.Scatter(
-                    x=curve_df["date"], y=curve_df["nav"],
-                    mode="lines", name="净值",
-                    line=dict(color="#00d4aa", width=2),
-                    fill="tozeroy",
-                    fillcolor="rgba(0,212,170,0.06)",
-                ))
-                # 基准线
+                for _src, _clr in zip(_sources, ["#00d4aa", "#4da6ff"]):
+                    _c = curve_df[curve_df["source"] == _src]
+                    if _c.empty:
+                        continue
+                    fig_nav.add_trace(go.Scatter(
+                        x=_c["date"], y=_c["nav"],
+                        mode="lines", name=_src,
+                        line=dict(color=_clr, width=2),
+                    ))
                 fig_nav.add_hline(y=1.0, line_dash="dot",
                                   line_color="#3a3a5a", line_width=1)
                 fig_nav.update_layout(
@@ -908,29 +918,39 @@ with tab_picks:
                     font=dict(color="#5a5a7a", size=10),
                     xaxis=dict(gridcolor="#1e1e2e", showgrid=True),
                     yaxis=dict(gridcolor="#1e1e2e", showgrid=True),
-                    showlegend=False,
+                    legend=dict(orientation="h", x=0, y=1.1,
+                                font=dict(size=10, color="#8e8e93"),
+                                bgcolor="rgba(0,0,0,0)"),
                 )
                 st.plotly_chart(fig_nav, use_container_width=True)
 
-                # 回撤区域图
-                fig_dd = go.Figure()
-                fig_dd.add_trace(go.Scatter(
-                    x=curve_df["date"], y=curve_df["drawdown"],
-                    mode="lines", name="回撤%",
-                    line=dict(color="#ff4d6d", width=1.5),
-                    fill="tozeroy",
-                    fillcolor="rgba(255,77,109,0.08)",
-                ))
-                fig_dd.update_layout(
-                    height=100, margin=dict(l=0, r=0, t=4, b=0),
-                    paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f",
-                    font=dict(color="#5a5a7a", size=10),
-                    xaxis=dict(gridcolor="#1e1e2e", showgrid=True),
-                    yaxis=dict(gridcolor="#1e1e2e", showgrid=True,
-                               tickformat=".1f", ticksuffix="%"),
-                    showlegend=False,
-                )
-                st.plotly_chart(fig_dd, use_container_width=True)
+                # 回撤（取两策略中较差的一条）
+                _dd_frames = [curve_df[curve_df["source"] == s][["date","drawdown"]].rename(
+                    columns={"drawdown": s}) for s in _sources
+                    if not curve_df[curve_df["source"] == s].empty]
+                if _dd_frames:
+                    fig_dd = go.Figure()
+                    for _src, _clr in zip(_sources, ["#ff4d6d", "#ff9f0a"]):
+                        _c = curve_df[curve_df["source"] == _src]
+                        if _c.empty:
+                            continue
+                        fig_dd.add_trace(go.Scatter(
+                            x=_c["date"], y=_c["drawdown"],
+                            mode="lines", name=_src,
+                            line=dict(color=_clr, width=1.2),
+                            fill="tozeroy",
+                            fillcolor=f"rgba({int(_clr[1:3],16)},{int(_clr[3:5],16)},{int(_clr[5:7],16)},0.06)",
+                        ))
+                    fig_dd.update_layout(
+                        height=100, margin=dict(l=0, r=0, t=4, b=0),
+                        paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f",
+                        font=dict(color="#5a5a7a", size=10),
+                        xaxis=dict(gridcolor="#1e1e2e", showgrid=True),
+                        yaxis=dict(gridcolor="#1e1e2e", showgrid=True,
+                                   tickformat=".1f", ticksuffix="%"),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig_dd, use_container_width=True)
             else:
                 st.markdown('<div style="color:#3a3a5a;font-size:12px;padding:20px 0">'
                             '结算数据不足，净值曲线将在推荐结果结算后自动生成。</div>',
@@ -959,7 +979,6 @@ with tab_picks:
                     showlegend=False,
                 )
                 st.plotly_chart(fig_sent, use_container_width=True)
-                # 各情绪推荐数
                 for _, r in sent_wr.iterrows():
                     st.markdown(
                         f'<div style="font-size:10px;color:#5a5a7a;margin-bottom:2px">'
