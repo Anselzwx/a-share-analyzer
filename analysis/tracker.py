@@ -17,11 +17,18 @@ from datetime import datetime, date, timedelta
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_PATH = os.path.join(_THIS_DIR, "..", "cache", "picks_history.csv")
 
-INITIAL_CAPITAL = 100_000.0   # 启动资金 10万元
+INITIAL_CAPITAL = 100_000.0   # 每个策略启动资金 10万元
 MAX_POSITIONS   = 3           # 最多同时持仓数
 POS_MIN         = 10_000.0   # 单笔最低 1万
 POS_MAX         = 50_000.0   # 单笔最高 5万
-CAPITAL_PATH    = os.path.join(_THIS_DIR, "..", "cache", "capital.csv")
+
+# 每个来源独立资金文件
+_CAPITAL_PATH_MAP = {
+    "热门精选": os.path.join(_THIS_DIR, "..", "cache", "capital_hot.csv"),
+    "超短线":   os.path.join(_THIS_DIR, "..", "cache", "capital_short.csv"),
+}
+# 兼容旧代码（默认取超短线）
+CAPITAL_PATH = _CAPITAL_PATH_MAP["超短线"]
 
 _COLUMNS = [
     "date",            # 推荐日期 YYYY-MM-DD
@@ -62,38 +69,43 @@ def _save_history(df: pd.DataFrame) -> None:
 
 # ── 资金账户 ──────────────────────────────────────────────────
 
-def get_current_capital() -> float:
-    """读取当前可用资金（元）。首次调用返回启动资金。"""
-    if not os.path.exists(CAPITAL_PATH):
+def _capital_path(source: str) -> str:
+    return _CAPITAL_PATH_MAP.get(source, _CAPITAL_PATH_MAP["超短线"])
+
+
+def get_current_capital(source: str = "超短线") -> float:
+    """读取指定来源的当前可用资金（元）。首次调用返回启动资金。"""
+    path = _capital_path(source)
+    if not os.path.exists(path):
         return INITIAL_CAPITAL
     try:
-        df = pd.read_csv(CAPITAL_PATH)
+        df = pd.read_csv(path)
         return float(df["capital"].iloc[-1])
     except Exception:
         return INITIAL_CAPITAL
 
 
-def _append_capital(capital: float, note: str = "") -> None:
-    """追加一条资金快照。"""
-    os.makedirs(os.path.dirname(CAPITAL_PATH), exist_ok=True)
+def _append_capital(capital: float, source: str = "超短线", note: str = "") -> None:
+    """追加一条资金快照到对应来源的资金文件。"""
+    path = _capital_path(source)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     row = pd.DataFrame({"date": [date.today().isoformat()],
                         "capital": [round(capital, 2)],
                         "note": [note]})
-    if os.path.exists(CAPITAL_PATH):
-        row.to_csv(CAPITAL_PATH, mode="a", header=False, index=False, encoding="utf-8-sig")
+    if os.path.exists(path):
+        row.to_csv(path, mode="a", header=False, index=False, encoding="utf-8-sig")
     else:
-        row.to_csv(CAPITAL_PATH, index=False, encoding="utf-8-sig")
+        row.to_csv(path, index=False, encoding="utf-8-sig")
 
 
-def get_capital_curve() -> pd.DataFrame:
-    """返回资金曲线 DataFrame: date, capital。"""
-    if not os.path.exists(CAPITAL_PATH):
-        return pd.DataFrame({"date": [date.today().isoformat()],
-                             "capital": [INITIAL_CAPITAL]})
+def get_capital_curve(source: str = "超短线") -> pd.DataFrame:
+    """返回指定来源资金曲线 DataFrame: date, capital。"""
+    path = _capital_path(source)
+    if not os.path.exists(path):
+        return pd.DataFrame({"date": ["起始"], "capital": [INITIAL_CAPITAL]})
     try:
-        df = pd.read_csv(CAPITAL_PATH)
+        df = pd.read_csv(path)
         df["capital"] = pd.to_numeric(df["capital"], errors="coerce")
-        # 插入初始点
         init_row = pd.DataFrame({"date": ["起始"], "capital": [INITIAL_CAPITAL]})
         return pd.concat([init_row, df[["date", "capital"]]], ignore_index=True)
     except Exception:
@@ -149,8 +161,8 @@ def save_picks(df: pd.DataFrame, source: str, sentiment_level: int = None) -> in
 
     today_str = date.today().isoformat()
 
-    # 动态仓位分配
-    available = get_current_capital()
+    # 动态仓位分配（每个来源独立资金池）
+    available = get_current_capital(source)
     scores    = pd.to_numeric(df["score"], errors="coerce").fillna(50).tolist()
     positions = _calc_positions(scores, available)
     # 补齐长度（scores 可能多于 MAX_POSITIONS）
@@ -249,7 +261,8 @@ def fill_results() -> int:
         return 0
 
     filled = 0
-    capital = get_current_capital()
+    # 按来源分别更新资金
+    capital_by_source = {}
 
     for idx, row in pending.iterrows():
         open_price = _get_next_trading_open(str(row["code"]), str(row["date"]))
@@ -259,7 +272,6 @@ def fill_results() -> int:
         if price <= 0:
             continue
         raw_pct = (open_price - price) / price * 100
-        # 次日开盘涨停/跌停 clamped to ±3%（目标+3%止盈，止损-3%）
         effective_pct = round(max(-3.0, min(3.0, raw_pct)), 2)
 
         position = float(row.get("position", 0) or 0)
@@ -269,31 +281,28 @@ def fill_results() -> int:
         history.at[idx, "pnl"]        = pnl
         history.at[idx, "win"]        = float(effective_pct > 0)
 
-        capital = round(capital + pnl, 2)
+        src = str(row.get("source", "超短线"))
+        if src not in capital_by_source:
+            capital_by_source[src] = get_current_capital(src)
+        capital_by_source[src] = round(capital_by_source[src] + pnl, 2)
         filled += 1
 
     if filled > 0:
         _save_history(history)
-        _append_capital(capital, note=f"结算{filled}笔")
+        for src, cap in capital_by_source.items():
+            _append_capital(cap, source=src, note=f"结算{filled}笔")
 
     return filled
 
 
-def get_stats() -> dict:
+def get_stats(source: str = None) -> dict:
     """
-    统计已有结果的推荐记录。
-
-    返回字典：
-        total_picks        — 总推荐数（含未结）
-        win_rate           — 胜率 %（仅已结算行）
-        avg_return         — 平均收益 %
-        max_win            — 最大单笔盈利 %
-        max_loss           — 最大单笔亏损 %
-        recent_10_win_rate — 最近10条已结算记录胜率 %
+    统计已有结果的推荐记录。source=None 表示全部，否则按来源过滤。
+    只统计仓位 > 0 的记录。
     """
     history = _load_history()
-
-    # 只统计仓位 > 0 的记录
+    if source:
+        history = history[history["source"] == source]
     history = history[pd.to_numeric(history["position"], errors="coerce") > 0].copy()
 
     settled = history[history["result_pct"].notna()].copy()
@@ -352,13 +361,14 @@ def get_history(n: int = 20) -> pd.DataFrame:
     return history.sort_values("date", ascending=False).head(n).reset_index(drop=True)
 
 
-def get_equity_curve() -> pd.DataFrame:
+def get_equity_curve(source: str = None) -> pd.DataFrame:
     """
-    计算累计净值曲线（从1开始，每笔已结算交易更新一次）。
+    计算累计净值曲线。source=None 表示全部，否则按来源过滤。
     只统计仓位 > 0 的记录。
-    返回 DataFrame: date, nav (净值), drawdown (回撤%)
     """
     history = _load_history()
+    if source:
+        history = history[history["source"] == source]
     history = history[pd.to_numeric(history["position"], errors="coerce") > 0]
     settled = history[history["result_pct"].notna()].copy()
     settled["result_pct"] = pd.to_numeric(settled["result_pct"], errors="coerce")
@@ -378,20 +388,19 @@ def get_equity_curve() -> pd.DataFrame:
     return daily[["date", "nav", "drawdown"]]
 
 
-def get_max_drawdown() -> float:
+def get_max_drawdown(source: str = None) -> float:
     """返回历史最大回撤（负数，%）。"""
-    curve = get_equity_curve()
+    curve = get_equity_curve(source)
     if curve.empty:
         return 0.0
     return round(curve["drawdown"].min(), 2)
 
 
-def get_sharpe() -> float:
-    """
-    简化夏普比率：年化收益 / 年化波动率（无风险利率取2.5%）。
-    只统计仓位 > 0 的记录。
-    """
+def get_sharpe(source: str = None) -> float:
+    """夏普比率。source=None 表示全部，否则按来源过滤。只统计仓位>0。"""
     history = _load_history()
+    if source:
+        history = history[history["source"] == source]
     history = history[pd.to_numeric(history["position"], errors="coerce") > 0]
     settled = history[history["result_pct"].notna()].copy()
     settled["result_pct"] = pd.to_numeric(settled["result_pct"], errors="coerce")
@@ -410,12 +419,11 @@ def get_sharpe() -> float:
     return round(sharpe, 2)
 
 
-def get_sentiment_winrate() -> pd.DataFrame:
-    """
-    按市场情绪等级分层统计胜率。只统计仓位 > 0 的记录。
-    返回 DataFrame: sentiment_label, picks, win_rate
-    """
+def get_sentiment_winrate(source: str = None) -> pd.DataFrame:
+    """情绪分层胜率。source=None 表示全部，否则按来源过滤。只统计仓位>0。"""
     history = _load_history()
+    if source:
+        history = history[history["source"] == source]
     history = history[pd.to_numeric(history["position"], errors="coerce") > 0]
     settled = history[history["result_pct"].notna()].copy()
     settled["result_pct"] = pd.to_numeric(settled["result_pct"], errors="coerce")

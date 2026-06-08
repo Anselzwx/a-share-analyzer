@@ -6,3 +6,5 @@ cache/
 __pycache__/
 *.pyc
 .DS_Store
+!cache/capital_hot.csv
+!cache/capital_short.csv

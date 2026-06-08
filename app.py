@@ -802,73 +802,87 @@ with tab_picks:
                 unsafe_allow_html=True)
     try:
         fill_results()
-        stats      = get_stats()
-        hist_df    = get_history(20)
-        curve_df   = get_equity_curve()
-        sharpe     = get_sharpe()
-        max_dd     = get_max_drawdown()
-        sent_wr    = get_sentiment_winrate()
         from analysis.tracker import get_current_capital, get_capital_curve, INITIAL_CAPITAL
-        cur_capital  = get_current_capital()
-        cap_curve_df = get_capital_curve()
-    except Exception:
-        stats, hist_df, curve_df = {}, pd.DataFrame(), pd.DataFrame()
-        sharpe, max_dd, sent_wr = 0.0, 0.0, pd.DataFrame()
-        cur_capital, cap_curve_df = 100_000.0, pd.DataFrame()
+        # 分来源加载数据
+        _sources = ["热门精选", "超短线"]
+        _src_data = {}
+        for _src in _sources:
+            _src_data[_src] = {
+                "stats":       get_stats(_src),
+                "curve_df":    get_equity_curve(_src),
+                "sharpe":      get_sharpe(_src),
+                "max_dd":      get_max_drawdown(_src),
+                "sent_wr":     get_sentiment_winrate(_src),
+                "cur_capital": get_current_capital(_src),
+                "cap_curve":   get_capital_curve(_src),
+            }
+        # 合并用于历史明细
+        hist_df  = get_history(30)
+        sent_wr  = get_sentiment_winrate()
+    except Exception as _e:
+        _src_data = {s: {"stats": {}, "curve_df": pd.DataFrame(), "sharpe": 0.0,
+                         "max_dd": 0.0, "sent_wr": pd.DataFrame(),
+                         "cur_capital": 100_000.0, "cap_curve": pd.DataFrame()}
+                     for s in ["热门精选", "超短线"]}
+        hist_df, sent_wr = pd.DataFrame(), pd.DataFrame()
         INITIAL_CAPITAL = 100_000.0
 
-    has_data = stats.get("total_picks", 0) > 0
+    has_data = any(_src_data[s]["stats"].get("total_picks", 0) > 0 for s in _sources)
 
-    # ── 资金账户概览（始终显示）────────────────────────────
-    total_pnl   = cur_capital - INITIAL_CAPITAL
-    total_pnl_r = total_pnl / INITIAL_CAPITAL * 100
-    pnl_color   = "#00d4aa" if total_pnl >= 0 else "#ff4d6d"
-    fa1, fa2, fa3, fa4 = st.columns(4)
-    fa1.metric("启动资金",   f"¥{INITIAL_CAPITAL/1e4:.0f}万")
-    fa2.metric("当前资金",   f"¥{cur_capital/1e4:.2f}万",
-               delta=f"{total_pnl_r:+.2f}%")
-    fa3.metric("累计盈亏",   f"¥{total_pnl:+,.0f}")
-    fa4.metric("最大回撤",   f"{max_dd:.2f}%")
+    # ── 资金账户概览：两个策略并排 ───────────────────────────
+    acc_left, acc_right = st.columns(2)
+    for _col, _src in zip([acc_left, acc_right], _sources):
+        _d = _src_data[_src]
+        _cap = _d["cur_capital"]
+        _pnl = _cap - INITIAL_CAPITAL
+        _pnl_r = _pnl / INITIAL_CAPITAL * 100
+        with _col:
+            st.markdown(f'<div class="bb-section">{_src}</div>', unsafe_allow_html=True)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("当前资金", f"¥{_cap/1e4:.2f}万", delta=f"{_pnl_r:+.2f}%")
+            m2.metric("累计盈亏", f"¥{_pnl:+,.0f}")
+            m3.metric("最大回撤", f"{_d['max_dd']:.2f}%")
 
-    # 资金曲线
-    if not cap_curve_df.empty and len(cap_curve_df) > 1:
-        fig_cap = go.Figure()
-        fig_cap.add_trace(go.Scatter(
-            x=cap_curve_df["date"], y=cap_curve_df["capital"],
-            mode="lines+markers", name="资金",
-            line=dict(color="#00d4aa", width=2),
-            marker=dict(size=4),
-            fill="tozeroy", fillcolor="rgba(0,212,170,0.05)",
-        ))
-        fig_cap.add_hline(y=INITIAL_CAPITAL, line_dash="dot",
-                          line_color="#3a3a5a", line_width=1,
-                          annotation_text="启动资金 10万",
-                          annotation_font_color="#3a3a5a",
-                          annotation_font_size=10)
-        fig_cap.update_layout(
-            height=180, margin=dict(l=0, r=0, t=10, b=0),
-            paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f",
-            font=dict(color="#5a5a7a", size=10),
-            xaxis=dict(gridcolor="#1e1e2e"),
-            yaxis=dict(gridcolor="#1e1e2e", tickprefix="¥",
-                       tickformat=",.0f"),
-            showlegend=False,
-        )
-        st.plotly_chart(fig_cap, use_container_width=True)
+    # ── 两策略资金曲线 + 核心指标并排 ──────────────────────
+    cap_l, cap_r = st.columns(2)
+    for _col, _src, _color in zip([cap_l, cap_r], _sources, ["#00d4aa", "#4da6ff"]):
+        _d = _src_data[_src]
+        _cc = _d["cap_curve"]
+        with _col:
+            if not _cc.empty and len(_cc) > 1:
+                fig_cap = go.Figure()
+                fig_cap.add_trace(go.Scatter(
+                    x=_cc["date"], y=_cc["capital"],
+                    mode="lines+markers", name=_src,
+                    line=dict(color=_color, width=2),
+                    marker=dict(size=4),
+                    fill="tozeroy",
+                    fillcolor=f"rgba({int(_color[1:3],16)},{int(_color[3:5],16)},{int(_color[5:7],16)},0.06)",
+                ))
+                fig_cap.add_hline(y=INITIAL_CAPITAL, line_dash="dot",
+                                  line_color="#3a3a5a", line_width=1)
+                fig_cap.update_layout(
+                    height=160, margin=dict(l=0, r=0, t=10, b=0),
+                    paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f",
+                    font=dict(color="#5a5a7a", size=10),
+                    xaxis=dict(gridcolor="#1e1e2e"),
+                    yaxis=dict(gridcolor="#1e1e2e", tickprefix="¥", tickformat=",.0f"),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_cap, use_container_width=True)
+
+            # 核心指标
+            _st = _d["stats"]
+            if _st.get("total_picks", 0) > 0:
+                i1, i2, i3, i4 = st.columns(4)
+                i1.metric("已结算", _st.get("settled_picks", 0))
+                i2.metric("胜率",   f"{_st.get('win_rate', 0):.1f}%")
+                i3.metric("平均收益", f"{_st.get('avg_return', 0):+.2f}%")
+                i4.metric("夏普",   f"{_d['sharpe']:.2f}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
 
     if has_data:
-        # ── 核心指标一行 ─────────────────────────────────────
-        kc1, kc2, kc3, kc4, kc5, kc6, kc7, kc8 = st.columns(8)
-        kc1.metric("已结算笔数",   stats.get("settled_picks", 0))
-        kc2.metric("整体胜率",     f"{stats['win_rate']}%")
-        kc3.metric("扣费后胜率",   f"{stats.get('win_rate_fee', 0.0)}%")
-        kc4.metric("达标胜率≥3%",  f"{stats.get('win_rate_3pct', 0.0)}%")
-        kc5.metric("平均收益",     f"{stats['avg_return']:+.2f}%")
-        kc6.metric("最大回撤",     f"{max_dd:.2f}%")
-        kc7.metric("夏普比率",     f"{sharpe:.2f}")
-        kc8.metric("近10笔胜率",   f"{stats['recent_10_win_rate']}%")
-
-        st.markdown("<br>", unsafe_allow_html=True)
 
         chart_l, chart_r = st.columns([3, 1])
 
