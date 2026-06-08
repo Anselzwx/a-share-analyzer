@@ -112,25 +112,40 @@ def get_capital_curve(source: str = "超短线") -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _calc_positions(scores: list, available: float) -> list:
+def _calc_positions(scores: list, available: float, sentiment_level: int = None) -> list:
     """
-    按得分权重动态分配仓位。
-    scores: 得分列表（与推荐顺序对应）
-    available: 今日可用资金（已扣除已持仓）
-    返回每笔仓位金额列表（≤MAX_POSITIONS 只）。
+    按得分权重动态分配仓位，乘以情绪系数。
+    sentiment_level: 0-1=空仓, 2=半仓(0.5), 3=七成(0.7), >=4=满仓(1.0)
     """
+    # 情绪系数
+    if sentiment_level is not None:
+        if sentiment_level <= 1:
+            sent_mult = 0.0
+        elif sentiment_level == 2:
+            sent_mult = 0.5
+        elif sentiment_level == 3:
+            sent_mult = 0.7
+        else:
+            sent_mult = 1.0
+    else:
+        sent_mult = 1.0
+
+    effective = available * sent_mult
+    if effective <= 0:
+        return [0.0] * min(len(scores), MAX_POSITIONS)
+
     n = min(len(scores), MAX_POSITIONS)
     scores = [max(float(s), 1.0) for s in scores[:n]]
     total_score = sum(scores)
     positions = []
     for s in scores:
-        raw = available * (s / total_score)
+        raw = effective * (s / total_score)
         pos = round(min(max(raw, POS_MIN), POS_MAX), 0)
         positions.append(pos)
-    # 确保总仓位不超过可用资金
+    # 确保总仓位不超过有效资金
     total_pos = sum(positions)
-    if total_pos > available:
-        scale = available / total_pos
+    if total_pos > effective:
+        scale = effective / total_pos
         positions = [round(p * scale, 0) for p in positions]
     return positions
 
@@ -165,10 +180,10 @@ def save_picks(df: pd.DataFrame, source: str, sentiment_level: int = None) -> in
 
     today_str = date.today().isoformat()
 
-    # 动态仓位分配（每个来源独立资金池）
+    # 动态仓位分配（每个来源独立资金池，乘以情绪系数）
     available = get_current_capital(source)
     scores    = pd.to_numeric(df["score"], errors="coerce").fillna(50).tolist()
-    positions = _calc_positions(scores, available)
+    positions = _calc_positions(scores, available, sentiment_level=sentiment_level)
     # 补齐长度（scores 可能多于 MAX_POSITIONS）
     while len(positions) < len(df):
         positions.append(0.0)

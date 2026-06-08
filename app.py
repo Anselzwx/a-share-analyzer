@@ -1430,16 +1430,13 @@ with tab_short:
         except Exception:
             pass
 
-        # 计算建议仓位（与 tracker 一致的逻辑）
+        # 计算建议仓位（与 tracker 完全一致，包含情绪系数）
         from analysis.tracker import get_current_capital, _calc_positions
         _avail_cap = get_current_capital()
         _scores_list = df_short["综合得分"].tolist()
-        _positions = _calc_positions(_scores_list, _avail_cap)
+        _positions = _calc_positions(_scores_list, _avail_cap, sentiment_level=_slvl)
         while len(_positions) < len(df_short):
             _positions.append(0.0)
-
-        # 情绪调整仓位系数
-        _sent_mult = 1.0 if _slvl >= 4 else 0.5 if _slvl == 2 else (0.0 if _slvl <= 1 else 0.8)
 
         rank_labels = ["#1", "#2", "#3", "#4", "#5"]
         cols_per_row = 5
@@ -1454,9 +1451,9 @@ with tab_short:
             score_color = "#30d158" if score >= 75 else "#ffd60a" if score >= 55 else "#ff453a"
             value_play = row.get("性价比佳", False)
 
-            # 建议仓位
+            # 建议仓位（情绪系数已在 _calc_positions 内计算）
             raw_pos = _positions[i] if i < len(_positions) else 0.0
-            adj_pos = round(raw_pos * _sent_mult / 1000) * 1000  # 取整到千元
+            adj_pos = round(raw_pos / 1000) * 1000  # 取整到千元
             if adj_pos >= 10000:
                 pos_str = f"¥{adj_pos/10000:.1f}万"
                 pos_color = "#30d158"
