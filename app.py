@@ -168,6 +168,183 @@ def load_northbound():
 def load_hist(sector_names: tuple):
     return get_multi_sector_hist(list(sector_names))
 
+@st.cache_data(ttl=600, show_spinner="")
+def load_watchlist(watchlist_key: str):
+    return get_all_watchlist_hist(start="20260101")
+
+@st.cache_data(ttl=300, show_spinner="")
+def load_realtime_vol(codes_key: str):
+    import akshare as _ak
+    codes = list(WATCHLIST.values())
+    result = {}
+    try:
+        spot = _ak.stock_zh_a_spot_em()
+        code_col = "代码" if "代码" in spot.columns else spot.columns[1]
+        price_col = "最新价" if "最新价" in spot.columns else None
+        pct_col = "涨跌幅" if "涨跌幅" in spot.columns else None
+        vr_col = "量比" if "量比" in spot.columns else None
+        spot_sub = spot[spot[code_col].isin(codes)]
+        for _, r in spot_sub.iterrows():
+            code = str(r[code_col])
+            result[code] = {
+                "price": float(r[price_col]) if price_col and r[price_col] else 0,
+                "pct":   float(r[pct_col])   if pct_col   and r[pct_col]   else 0,
+                "vol_ratio": round(float(r[vr_col]), 2) if vr_col and r[vr_col] else 0,
+            }
+        if result:
+            return result
+    except Exception:
+        pass
+    import requests
+    syms = ",".join(
+        f"sh{c}" if c.startswith("6") else f"sz{c}"
+        for c in codes
+    )
+    try:
+        r = requests.get(
+            f"http://hq.sinajs.cn/list={syms}",
+            headers={"Referer": "http://finance.sina.com.cn", "User-Agent": "Mozilla/5.0"},
+            timeout=6,
+        )
+        r.encoding = "gbk"
+        for code, line in zip(codes, r.text.strip().splitlines()):
+            vals = line.split('"')[1].split(",")
+            if len(vals) < 32:
+                continue
+            try:
+                price = float(vals[3]) if vals[3] else 0
+                yest_close = float(vals[2]) if vals[2] else 0
+                pct = round((price / yest_close - 1) * 100, 2) if yest_close else 0
+                result[code] = {"price": price, "pct": pct, "vol_ratio": 0}
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return result
+
+@st.cache_data(ttl=900, show_spinner="综合精选筛选中...")
+def load_hot_picks():
+    return pick_top5(max_candidates=30)
+
+@st.cache_data(ttl=900, show_spinner="热门板块分析中（约30秒）...")
+def load_sector_picks():
+    return pick_hot_sectors(top_n_sectors=8, stocks_per_sector=4)
+
+@st.cache_data(ttl=900, show_spinner="筛选超短线候选（约20秒）...")
+def load_short_picks():
+    return pick_short_term_top5(max_candidates=40)
+
+@st.cache_data(ttl=300, show_spinner="扫描量比异动...")
+def load_vol_surge(_key: str):
+    import requests, json as _json
+
+    def _is_main(c):
+        c = str(c).zfill(6)
+        return c.startswith("60") or c.startswith("00")
+
+    for em_host in ["push2.eastmoney.com", "82.push2.eastmoney.com"]:
+        try:
+            url = (
+                f"https://{em_host}/api/qt/clist/get"
+                "?pn=1&pz=500&po=1&np=1&fltt=2&invt=2&fid=f10"
+                "&fs=m:1+t:2,m:0+t:6,m:0+t:80"
+                "&fields=f2,f3,f8,f10,f12,f14"
+            )
+            r = requests.get(url, timeout=6,
+                             headers={"User-Agent": "Mozilla/5.0",
+                                      "Referer": "https://quote.eastmoney.com"})
+            items = r.json()["data"]["diff"]
+            rows = []
+            for it in items:
+                code = str(it.get("f12", "")).zfill(6)
+                if not _is_main(code):
+                    continue
+                vr = float(it.get("f10") or 0)
+                if vr < 3:
+                    continue
+                rows.append({
+                    "代码": code,
+                    "名称": it.get("f14", ""),
+                    "最新价": float(it.get("f2") or 0),
+                    "涨跌幅": float(it.get("f3") or 0),
+                    "量比": vr,
+                    "换手率": float(it.get("f8") or 0),
+                })
+            if rows:
+                df = pd.DataFrame(rows).sort_values("量比", ascending=False).head(10)
+                return df.reset_index(drop=True)
+        except Exception:
+            continue
+
+    try:
+        rows = []
+        for node in ["hs_a", "sh_a", "sz_a"]:
+            url2 = (
+                f"http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php"
+                f"/Market_Center.getHQNodeData?page=1&num=100&sort=turnoverratio"
+                f"&asc=0&node={node}&symbol=&_s_r_a=page"
+            )
+            r2 = requests.get(url2, timeout=8,
+                              headers={"Referer": "http://finance.sina.com.cn",
+                                       "User-Agent": "Mozilla/5.0"})
+            data = _json.loads(r2.text)
+            if not isinstance(data, list):
+                continue
+            for it in data:
+                code = str(it.get("code", "")).zfill(6)
+                if not _is_main(code):
+                    continue
+                name = it.get("name", "")
+                if "ST" in name or "退市" in name:
+                    continue
+                try:
+                    turnover = float(it.get("turnoverratio") or 0)
+                    pct      = float(it.get("changepercent") or 0)
+                    price    = float(it.get("trade") or 0)
+                except Exception:
+                    continue
+                if turnover < 3:
+                    continue
+                rows.append({
+                    "代码": code, "名称": name,
+                    "最新价": price, "涨跌幅": pct,
+                    "量比": turnover,
+                    "换手率": turnover,
+                })
+        if rows:
+            df = (pd.DataFrame(rows)
+                  .drop_duplicates("代码")
+                  .sort_values("量比", ascending=False)
+                  .head(10))
+            return df.reset_index(drop=True)
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+@st.cache_data(ttl=1800, show_spinner="正在获取电力板块成分股数据...")
+def load_power_top50():
+    return get_sector_top50("电力")
+
+@st.cache_data(ttl=1800, show_spinner="正在分析电力板块，计算技术指标（约60秒）...")
+def load_power_picks(top50_hash: int):
+    return pick_sector_top5("电力")
+
+@st.cache_data(ttl=1800, show_spinner="正在获取半导体板块成分股数据...")
+def load_semi_top50():
+    return get_sector_top50("半导体")
+
+@st.cache_data(ttl=1800, show_spinner="正在分析半导体板块，计算技术指标（约60秒）...")
+def load_semi_picks(top50_hash: int):
+    return pick_sector_top5("半导体")
+
+@st.cache_data(ttl=1800, show_spinner="正在获取板块成分股数据...")
+def load_generic_top50(sector_name: str):
+    return get_sector_top50(sector_name)
+
+@st.cache_data(ttl=1800, show_spinner="正在分析板块，计算技术指标...")
+def load_generic_picks(sector_name: str, top50_hash: int):
+    return pick_sector_top5(sector_name)
+
 with st.spinner("正在获取今日市场数据..."):
     try:
         df_sector = load_sector(use_concept)
@@ -391,65 +568,6 @@ with tab_watch:
                     unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── 数据加载 ─────────────────────────────────────────────
-    @st.cache_data(ttl=600, show_spinner="")
-    def load_watchlist(watchlist_key: str):
-        return get_all_watchlist_hist(start="20260101")
-
-    @st.cache_data(ttl=300, show_spinner="")
-    def load_realtime_vol(codes_key: str):
-        """拉实时量比，5分钟缓存。优先东财spot接口（含量比字段），失败降级新浪。"""
-        import akshare as _ak
-        codes = list(WATCHLIST.values())
-        result = {}
-        try:
-            spot = _ak.stock_zh_a_spot_em()
-            # 东财字段：代码、名称、最新价、涨跌幅、量比
-            code_col = "代码" if "代码" in spot.columns else spot.columns[1]
-            price_col = "最新价" if "最新价" in spot.columns else None
-            pct_col = "涨跌幅" if "涨跌幅" in spot.columns else None
-            vr_col = "量比" if "量比" in spot.columns else None
-            spot_sub = spot[spot[code_col].isin(codes)]
-            for _, r in spot_sub.iterrows():
-                code = str(r[code_col])
-                result[code] = {
-                    "price": float(r[price_col]) if price_col and r[price_col] else 0,
-                    "pct":   float(r[pct_col])   if pct_col   and r[pct_col]   else 0,
-                    "vol_ratio": round(float(r[vr_col]), 2) if vr_col and r[vr_col] else 0,
-                }
-            if result:
-                return result
-        except Exception:
-            pass
-
-        # 降级：新浪实时（无量比字段，设为0）
-        import requests
-        syms = ",".join(
-            f"sh{c}" if c.startswith("6") else f"sz{c}"
-            for c in codes
-        )
-        try:
-            r = requests.get(
-                f"http://hq.sinajs.cn/list={syms}",
-                headers={"Referer": "http://finance.sina.com.cn", "User-Agent": "Mozilla/5.0"},
-                timeout=6,
-            )
-            r.encoding = "gbk"
-            for code, line in zip(codes, r.text.strip().splitlines()):
-                vals = line.split('"')[1].split(",")
-                if len(vals) < 32:
-                    continue
-                try:
-                    price = float(vals[3]) if vals[3] else 0
-                    yest_close = float(vals[2]) if vals[2] else 0
-                    pct = round((price / yest_close - 1) * 100, 2) if yest_close else 0
-                    result[code] = {"price": price, "pct": pct, "vol_ratio": 0}
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        return result
 
     _watchlist_key = ",".join(sorted(WATCHLIST.keys())) + "_" + datetime.now().strftime("%Y%m%d%H")
     _rt_key = ",".join(sorted(WATCHLIST.values())) + "_" + datetime.now().strftime("%Y%m%d%H%M")[:-1]
@@ -734,14 +852,6 @@ with tab_picks:
 </div>""", unsafe_allow_html=True)
 
     # ── 综合精选5只 ──────────────────────────────────────────
-    @st.cache_data(ttl=900, show_spinner="综合精选筛选中...")
-    def load_hot_picks():
-        return pick_top5(max_candidates=30)
-
-    @st.cache_data(ttl=900, show_spinner="热门板块分析中（约30秒）...")
-    def load_sector_picks():
-        return pick_hot_sectors(top_n_sectors=8, stocks_per_sector=4)
-
     with st.spinner("加载中..."):
         try:
             df_picks = load_hot_picks()
@@ -1214,8 +1324,12 @@ def load_intraday(code: str):
             parts = item.split(",")
             if len(parts) < 3:
                 continue
-            rows.append({"time": parts[0][-5:], "price": float(parts[2]),
-                         "avg_price": float(parts[7]) if len(parts) > 7 else None})
+            try:
+                price_val = float(parts[2])
+                avg_val = float(parts[7]) if len(parts) > 7 and parts[7] else None
+            except (ValueError, IndexError):
+                continue
+            rows.append({"time": parts[0][-5:], "price": price_val, "avg_price": avg_val})
         return pd.DataFrame(rows)
     except Exception:
         return pd.DataFrame()
@@ -1300,12 +1414,6 @@ with tab_short:
             '<b>情绪良好，可积极入场</b> — 当前市场情绪支撑超短线策略，按满仓位操作</div>',
             unsafe_allow_html=True,
         )
-
-    @st.cache_data(ttl=900, show_spinner="筛选超短线候选（约20秒）...")
-    def load_short_picks():
-        return pick_short_term_top5(max_candidates=40)
-
-
 
     with st.spinner("筛选中..."):
         try:
@@ -1452,7 +1560,10 @@ with tab_short:
             )
 
             # ── 分时图 ──────────────────────────────────────
-            df_min = load_intraday(code)
+            try:
+                df_min = load_intraday(code)
+            except Exception:
+                df_min = pd.DataFrame()
             if not df_min.empty:
                 fig_min = go.Figure()
                 # 价格面积
@@ -1744,100 +1855,6 @@ with tab_short:
                 'margin-bottom:10px;letter-spacing:0">量比异动预警（主板量比/换手率 ≥3x）</div>',
                 unsafe_allow_html=True)
 
-    @st.cache_data(ttl=300, show_spinner="扫描量比异动...")
-    def load_vol_surge(_key: str):
-        """全市场扫描量比≥3x的主板股票，5分钟缓存。
-        接口1：东财 spot（含量比字段）
-        接口2：新浪换手榜（近似量比，用换手率≥3%筛异动）
-        """
-        import requests, json as _json
-
-        def _is_main(c):
-            c = str(c).zfill(6)
-            return c.startswith("60") or c.startswith("00")
-
-        # ── 接口1：东财 ──────────────────────────────────────
-        for em_host in ["push2.eastmoney.com", "82.push2.eastmoney.com"]:
-            try:
-                url = (
-                    f"https://{em_host}/api/qt/clist/get"
-                    "?pn=1&pz=500&po=1&np=1&fltt=2&invt=2&fid=f10"
-                    "&fs=m:1+t:2,m:0+t:6,m:0+t:80"
-                    "&fields=f2,f3,f8,f10,f12,f14"
-                )
-                r = requests.get(url, timeout=6,
-                                 headers={"User-Agent": "Mozilla/5.0",
-                                          "Referer": "https://quote.eastmoney.com"})
-                items = r.json()["data"]["diff"]
-                rows = []
-                for it in items:
-                    code = str(it.get("f12", "")).zfill(6)
-                    if not _is_main(code):
-                        continue
-                    vr = float(it.get("f10") or 0)
-                    if vr < 3:
-                        continue
-                    rows.append({
-                        "代码": code,
-                        "名称": it.get("f14", ""),
-                        "最新价": float(it.get("f2") or 0),
-                        "涨跌幅": float(it.get("f3") or 0),
-                        "量比": vr,
-                        "换手率": float(it.get("f8") or 0),
-                    })
-                if rows:
-                    df = pd.DataFrame(rows).sort_values("量比", ascending=False).head(10)
-                    return df.reset_index(drop=True)
-            except Exception:
-                continue
-
-        # ── 接口2：新浪换手率榜（量比字段用换手率近似）────────
-        try:
-            rows = []
-            for node in ["hs_a", "sh_a", "sz_a"]:
-                url2 = (
-                    f"http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php"
-                    f"/Market_Center.getHQNodeData?page=1&num=100&sort=turnoverratio"
-                    f"&asc=0&node={node}&symbol=&_s_r_a=page"
-                )
-                r2 = requests.get(url2, timeout=8,
-                                  headers={"Referer": "http://finance.sina.com.cn",
-                                           "User-Agent": "Mozilla/5.0"})
-                data = _json.loads(r2.text)
-                if not isinstance(data, list):
-                    continue
-                for it in data:
-                    code = str(it.get("code", "")).zfill(6)
-                    if not _is_main(code):
-                        continue
-                    name = it.get("name", "")
-                    if "ST" in name or "退市" in name:
-                        continue
-                    try:
-                        turnover = float(it.get("turnoverratio") or 0)
-                        pct      = float(it.get("changepercent") or 0)
-                        price    = float(it.get("trade") or 0)
-                    except Exception:
-                        continue
-                    if turnover < 3:
-                        continue
-                    rows.append({
-                        "代码": code, "名称": name,
-                        "最新价": price, "涨跌幅": pct,
-                        "量比": turnover,   # 用换手率近似
-                        "换手率": turnover,
-                    })
-            if rows:
-                df = (pd.DataFrame(rows)
-                      .drop_duplicates("代码")
-                      .sort_values("量比", ascending=False)
-                      .head(10))
-                return df.reset_index(drop=True)
-        except Exception:
-            pass
-
-        return pd.DataFrame()
-
     _vol_key = datetime.now().strftime("%Y%m%d%H%M")[:-1]
     df_surge = load_vol_surge(_vol_key)
 
@@ -1876,14 +1893,6 @@ with tab_short:
 with tab_power:
     st.subheader("⚡ 电力板块 Top50 行情")
     st.caption("数据来源：同花顺行业板块（电力 881145）｜PE合理区间 8-28｜每30分钟刷新")
-
-    @st.cache_data(ttl=1800, show_spinner="正在获取电力板块成分股数据...")
-    def load_power_top50():
-        return get_sector_top50("电力")
-
-    @st.cache_data(ttl=1800, show_spinner="正在分析电力板块，计算技术指标（约60秒）...")
-    def load_power_picks(top50_hash: int):
-        return pick_sector_top5("电力")
 
     if st.button("🔄 重新分析", key="refresh_power"):
         st.cache_data.clear()
@@ -1966,14 +1975,6 @@ MA5={row['MA5']} MA20={row['MA20']} ｜ RSI={row['RSI14']} ｜ 区间位{row['60
 with tab_semi:
     st.subheader("🔬 半导体板块 Top50 行情")
     st.caption("数据来源：同花顺行业板块（半导体 881121）｜PE合理区间 30-80｜每30分钟刷新")
-
-    @st.cache_data(ttl=1800, show_spinner="正在获取半导体板块成分股数据...")
-    def load_semi_top50():
-        return get_sector_top50("半导体")
-
-    @st.cache_data(ttl=1800, show_spinner="正在分析半导体板块，计算技术指标（约60秒）...")
-    def load_semi_picks(top50_hash: int):
-        return pick_sector_top5("半导体")
 
     if st.button("🔄 重新分析", key="refresh_semi"):
         st.cache_data.clear()
@@ -2058,21 +2059,13 @@ def render_sector_tab(tab, sector_name: str, icon: str, pe_note: str, tab_key: s
         st.subheader(f"{icon} {sector_name}板块 Top50 行情")
         st.caption(f"数据来源：同花顺｜{pe_note}｜每30分钟刷新")
 
-        @st.cache_data(ttl=1800, show_spinner=f"正在获取{sector_name}板块成分股数据...")
-        def _load_top50(name=sector_name):
-            return get_sector_top50(name)
-
-        @st.cache_data(ttl=1800, show_spinner=f"正在分析{sector_name}板块，计算技术指标...")
-        def _load_picks(hash_val, name=sector_name):
-            return pick_sector_top5(name)
-
         if st.button("🔄 重新分析", key=f"refresh_{tab_key}"):
             st.cache_data.clear()
             st.rerun()
 
         with st.spinner(f"正在获取{sector_name}板块数据..."):
             try:
-                df_top = _load_top50()
+                df_top = load_generic_top50(sector_name)
                 top_ok = not df_top.empty
             except Exception as e:
                 st.error(f"{sector_name}板块数据获取失败：{e}")
@@ -2105,7 +2098,7 @@ def render_sector_tab(tab, sector_name: str, icon: str, pe_note: str, tab_key: s
 
             with st.spinner("计算技术指标中..."):
                 try:
-                    df_p5 = _load_picks(len(df_top))
+                    df_p5 = load_generic_picks(sector_name, len(df_top))
                     picks_ok = not df_p5.empty
                 except Exception as e:
                     st.error(f"精选分析失败：{e}")
