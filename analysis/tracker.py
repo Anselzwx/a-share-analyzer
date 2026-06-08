@@ -293,7 +293,9 @@ def get_stats() -> dict:
     """
     history = _load_history()
 
-    # 只看已有结果的行
+    # 只统计仓位 > 0 的记录
+    history = history[pd.to_numeric(history["position"], errors="coerce") > 0].copy()
+
     settled = history[history["result_pct"].notna()].copy()
     settled["result_pct"] = pd.to_numeric(settled["result_pct"], errors="coerce")
     settled = settled.dropna(subset=["result_pct"])
@@ -353,10 +355,11 @@ def get_history(n: int = 20) -> pd.DataFrame:
 def get_equity_curve() -> pd.DataFrame:
     """
     计算累计净值曲线（从1开始，每笔已结算交易更新一次）。
-    假设每笔等权仓位，result_pct 直接累乘。
+    只统计仓位 > 0 的记录。
     返回 DataFrame: date, nav (净值), drawdown (回撤%)
     """
     history = _load_history()
+    history = history[pd.to_numeric(history["position"], errors="coerce") > 0]
     settled = history[history["result_pct"].notna()].copy()
     settled["result_pct"] = pd.to_numeric(settled["result_pct"], errors="coerce")
     settled = settled.dropna(subset=["result_pct"]).sort_values("date")
@@ -386,8 +389,10 @@ def get_max_drawdown() -> float:
 def get_sharpe() -> float:
     """
     简化夏普比率：年化收益 / 年化波动率（无风险利率取2.5%）。
+    只统计仓位 > 0 的记录。
     """
     history = _load_history()
+    history = history[pd.to_numeric(history["position"], errors="coerce") > 0]
     settled = history[history["result_pct"].notna()].copy()
     settled["result_pct"] = pd.to_numeric(settled["result_pct"], errors="coerce")
     settled = settled.dropna(subset=["result_pct"])
@@ -407,11 +412,11 @@ def get_sharpe() -> float:
 
 def get_sentiment_winrate() -> pd.DataFrame:
     """
-    按市场情绪等级分层统计胜率。
-    需要历史记录中有 sentiment_level 列；若没有则跳过情绪分层。
+    按市场情绪等级分层统计胜率。只统计仓位 > 0 的记录。
     返回 DataFrame: sentiment_label, picks, win_rate
     """
     history = _load_history()
+    history = history[pd.to_numeric(history["position"], errors="coerce") > 0]
     settled = history[history["result_pct"].notna()].copy()
     settled["result_pct"] = pd.to_numeric(settled["result_pct"], errors="coerce")
     settled = settled.dropna(subset=["result_pct"])
