@@ -973,6 +973,34 @@ with tab_picks:
             '暂无历史记录，推荐数据将在首次加载后自动存档，T+1收盘后自动结算。</div>',
             unsafe_allow_html=True)
 
+@st.cache_data(ttl=120)
+def load_intraday(code: str):
+    """获取今日分时数据，返回 DataFrame: time, price, avg_price"""
+    import requests
+    secid = f"1.{code}" if code.startswith("6") else f"0.{code}"
+    try:
+        url = (
+            "https://push2.eastmoney.com/api/qt/stock/trends2/get"
+            f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11"
+            "&fields2=f51,f52,f53,f54,f55,f56,f57,f58"
+            "&iscr=0&ndays=1"
+        )
+        r = requests.get(url, timeout=6,
+                         headers={"User-Agent": "Mozilla/5.0",
+                                  "Referer": "https://quote.eastmoney.com"})
+        data = r.json()["data"]["trends"]
+        rows = []
+        for item in data:
+            parts = item.split(",")
+            if len(parts) < 3:
+                continue
+            rows.append({"time": parts[0][-5:], "price": float(parts[2]),
+                         "avg_price": float(parts[7]) if len(parts) > 7 else None})
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
 # ════════════════════════════════════════════════════════════
 # Tab 5：超短线（今买明卖）
 # ════════════════════════════════════════════════════════════
@@ -1057,32 +1085,7 @@ with tab_short:
     def load_short_picks():
         return pick_short_term_top5(max_candidates=40)
 
-    @st.cache_data(ttl=120)
-    def load_intraday(code: str):
-        """获取今日分时数据，返回 DataFrame: time, price, avg_price"""
-        import requests, json
-        secid = f"1.{code}" if code.startswith("6") else f"0.{code}"
-        try:
-            url = (
-                "https://push2.eastmoney.com/api/qt/stock/trends2/get"
-                f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11"
-                "&fields2=f51,f52,f53,f54,f55,f56,f57,f58"
-                "&iscr=0&ndays=1"
-            )
-            r = requests.get(url, timeout=6,
-                             headers={"User-Agent": "Mozilla/5.0",
-                                      "Referer": "https://quote.eastmoney.com"})
-            data = r.json()["data"]["trends"]
-            rows = []
-            for item in data:
-                parts = item.split(",")
-                if len(parts) < 3:
-                    continue
-                rows.append({"time": parts[0][-5:], "price": float(parts[2]),
-                             "avg_price": float(parts[7]) if len(parts) > 7 else None})
-            return pd.DataFrame(rows)
-        except Exception:
-            return pd.DataFrame()
+
 
     with st.spinner("筛选中..."):
         try:
