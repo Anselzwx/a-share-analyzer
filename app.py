@@ -1030,6 +1030,118 @@ with tab_picks:
                 lambda x: "✅" if x == 1.0 else ("❌" if x == 0.0 else "—"))
             disp.columns = ["日期", "来源", "名称", "代码", "推荐价", "仓位", "得分", "收益%", "盈亏", "结果"]
             st.dataframe(disp, use_container_width=True, hide_index=True)
+
+        # ── K线复盘（已结算有仓位的记录）────────────────────
+        settled_with_pos = hist_df[
+            hist_df["result_pct"].notna() &
+            (pd.to_numeric(hist_df["position"], errors="coerce") > 0)
+        ].copy() if not hist_df.empty else pd.DataFrame()
+
+        if not settled_with_pos.empty:
+            st.markdown('<div class="bb-section" style="margin-top:24px">K线复盘</div>',
+                        unsafe_allow_html=True)
+            import plotly.graph_objects as _go
+            from analysis.watchlist import get_stock_hist as _get_hist
+            _BG   = "#0a0a0f"
+            _PBG  = "#0d0d14"
+            _GC   = "#1c1c2e"
+
+            for _, rec in settled_with_pos.iterrows():
+                r_code  = str(rec["code"]).zfill(6)
+                r_name  = rec["name"]
+                r_price = float(rec["price"])
+                r_date  = str(rec["date"])
+                r_pct   = float(rec["result_pct"])
+                r_pnl   = float(rec["pnl"]) if pd.notna(rec["pnl"]) else 0
+                result_color = "#30d158" if r_pct > 0 else "#ff453a"
+                result_label = f"+{r_pct:.2f}%" if r_pct > 0 else f"{r_pct:.2f}%"
+
+                st.markdown(
+                    f'<div style="font-size:13px;font-weight:600;color:#f5f5f7;margin:16px 0 4px 2px">'
+                    f'{r_name} <span style="color:#636366;font-size:11px">{r_code}</span>'
+                    f'&nbsp;&nbsp;买入 ¥{r_price:.2f}&nbsp;&nbsp;'
+                    f'<span style="color:{result_color}">{result_label}（¥{r_pnl:+,.0f}）</span></div>',
+                    unsafe_allow_html=True,
+                )
+                try:
+                    df_k = _get_hist(r_code, r_name, start="20250101")
+                    df_k = df_k.sort_values("date")
+                    # 取买入日前后各15天
+                    buy_dt = pd.to_datetime(r_date)
+                    mask = (df_k["date"] >= buy_dt - pd.Timedelta(days=20)) & \
+                           (df_k["date"] <= buy_dt + pd.Timedelta(days=10))
+                    df_k = df_k[mask].copy()
+                    if df_k.empty:
+                        continue
+                    df_k["MA5"]  = df_k["close"].rolling(5, min_periods=1).mean()
+
+                    fig_r = _go.Figure()
+                    fig_r.add_trace(_go.Candlestick(
+                        x=df_k["date"],
+                        open=df_k["open"], high=df_k["high"],
+                        low=df_k["low"],   close=df_k["close"],
+                        name="K线",
+                        increasing_line_color="#ff453a", increasing_fillcolor="#ff453a",
+                        decreasing_line_color="#30d158", decreasing_fillcolor="#30d158",
+                    ))
+                    fig_r.add_trace(_go.Scatter(
+                        x=df_k["date"], y=df_k["MA5"],
+                        mode="lines", name="MA5",
+                        line=dict(color="#ffd60a", width=1),
+                    ))
+                    # 买入价线
+                    fig_r.add_hline(y=r_price,
+                                    line_color="#ffd60a", line_width=1.5,
+                                    annotation_text=f"买入 ¥{r_price:.2f}",
+                                    annotation_font_color="#ffd60a", annotation_font_size=10,
+                                    annotation_position="right")
+                    # 止损线
+                    fig_r.add_hline(y=round(r_price * 0.97, 2),
+                                    line_color="#ff453a", line_width=1, line_dash="dot",
+                                    annotation_text="止损 -3%",
+                                    annotation_font_color="#ff453a", annotation_font_size=10,
+                                    annotation_position="right")
+                    # 目标线
+                    fig_r.add_hline(y=round(r_price * 1.03, 2),
+                                    line_color="#30d158", line_width=1, line_dash="dot",
+                                    annotation_text="目标 +3%",
+                                    annotation_font_color="#30d158", annotation_font_size=10,
+                                    annotation_position="right")
+                    # 买入日竖线
+                    fig_r.add_vline(x=r_date,
+                                    line_color="#ffd60a", line_width=1, line_dash="dash")
+                    # 结果标注点（买入日收盘处）
+                    buy_row = df_k[df_k["date"].astype(str) == r_date]
+                    if not buy_row.empty:
+                        fig_r.add_trace(_go.Scatter(
+                            x=[buy_row["date"].iloc[0]],
+                            y=[r_price],
+                            mode="markers+text",
+                            marker=dict(color=result_color, size=10, symbol="triangle-up"),
+                            text=[result_label],
+                            textposition="top center",
+                            textfont=dict(color=result_color, size=11),
+                            name="买入点", showlegend=False,
+                        ))
+                    fig_r.update_layout(
+                        paper_bgcolor=_BG, plot_bgcolor=_PBG,
+                        height=260,
+                        margin=dict(l=8, r=70, t=8, b=8),
+                        xaxis=dict(showgrid=True, gridcolor=_GC,
+                                   tickfont=dict(size=10, color="#636366"),
+                                   rangeslider_visible=False, zeroline=False),
+                        yaxis=dict(showgrid=True, gridcolor=_GC,
+                                   tickfont=dict(size=10, color="#636366"),
+                                   side="right", zeroline=False),
+                        legend=dict(orientation="h", x=0, y=1.0,
+                                    font=dict(size=10, color="#8e8e93"),
+                                    bgcolor="rgba(0,0,0,0)"),
+                        hovermode="x unified",
+                    )
+                    st.plotly_chart(fig_r, use_container_width=True,
+                                    config={"displayModeBar": False})
+                except Exception:
+                    pass
     else:
         st.markdown(
             '<div style="color:#3a3a5a;font-size:12px;padding:12px 0">'
@@ -1342,7 +1454,7 @@ with tab_short:
                 st.plotly_chart(fig_min, use_container_width=True,
                                 config={"displayModeBar": False})
 
-            # ── 日K图（近60日）──────────────────────────────
+            # ── 日K图（近60日）+ 买入价标注 ─────────────────
             try:
                 df_k = get_stock_hist(code, name, start="20250101")
                 df_k = df_k.sort_values("date").tail(60)
@@ -1370,7 +1482,6 @@ with tab_short:
                         mode="lines", name="MA20",
                         line=dict(color="#4da6ff", width=1.2),
                     ))
-                    # 成交量
                     vol_colors = ["#ff453a" if c >= o else "#30d158"
                                   for c, o in zip(df_k["close"], df_k["open"])]
                     fig_k.add_trace(go.Bar(
@@ -1378,10 +1489,30 @@ with tab_short:
                         name="成交量", marker_color=vol_colors,
                         yaxis="y2", opacity=0.5,
                     ))
+                    # 买入价黄线 + 止损/目标价
+                    buy_price = float(row["最新价"])
+                    fig_k.add_hline(y=buy_price,
+                                    line_color="#ffd60a", line_width=1.5,
+                                    annotation_text=f"买入 ¥{buy_price:.2f}",
+                                    annotation_font_color="#ffd60a",
+                                    annotation_font_size=10,
+                                    annotation_position="right")
+                    fig_k.add_hline(y=round(buy_price * 0.97, 2),
+                                    line_color="#ff453a", line_width=1, line_dash="dot",
+                                    annotation_text=f"止损 -3%",
+                                    annotation_font_color="#ff453a",
+                                    annotation_font_size=10,
+                                    annotation_position="right")
+                    fig_k.add_hline(y=round(buy_price * 1.03, 2),
+                                    line_color="#30d158", line_width=1, line_dash="dot",
+                                    annotation_text=f"目标 +3%",
+                                    annotation_font_color="#30d158",
+                                    annotation_font_size=10,
+                                    annotation_position="right")
                     fig_k.update_layout(
                         paper_bgcolor=_CHART_BG, plot_bgcolor=_PLOT_BG,
                         height=280,
-                        margin=dict(l=8, r=8, t=8, b=8),
+                        margin=dict(l=8, r=60, t=8, b=8),
                         xaxis=dict(
                             showgrid=True, gridcolor=_GRID_COLOR,
                             tickfont=dict(size=10, color="#636366"),
