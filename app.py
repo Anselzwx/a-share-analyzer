@@ -956,17 +956,79 @@ with tab_picks:
                             '情绪数据将在记录积累后显示。</div>',
                             unsafe_allow_html=True)
 
-        # ── 历史明细 ─────────────────────────────────────────
-        st.markdown('<div class="bb-section" style="margin-top:20px">推荐明细</div>',
+        # ── 今日操作指令 ─────────────────────────────────────
+        from datetime import date as _date
+        today_str = _date.today().isoformat()
+        today_ops = hist_df[hist_df["date"].astype(str) == today_str].copy() if not hist_df.empty else pd.DataFrame()
+
+        st.markdown('<div class="bb-section" style="margin-top:20px">今日操作指令</div>',
+                    unsafe_allow_html=True)
+        if today_ops.empty:
+            st.markdown('<div style="color:#3a3a5a;font-size:12px;padding:8px 0">今日暂无推荐记录</div>',
+                        unsafe_allow_html=True)
+        else:
+            # 只取有仓位的
+            today_ops = today_ops[pd.to_numeric(today_ops["position"], errors="coerce") > 0].copy()
+            if today_ops.empty:
+                st.markdown('<div style="color:#3a3a5a;font-size:12px;padding:8px 0">今日推荐仓位为0，建议观望</div>',
+                            unsafe_allow_html=True)
+            else:
+                op_cols = st.columns(min(len(today_ops), 4))
+                for i, (_, row) in enumerate(today_ops.iterrows()):
+                    price  = float(row["price"])
+                    pos    = float(row["position"])
+                    stop   = round(price * 0.97, 2)
+                    target = round(price * 1.03, 2)
+                    shares = int(pos / price / 100) * 100  # 取整到100股
+                    pnl_str = (f'<span style="color:#30d158">{row["result_pct"]:+.2f}%</span>'
+                               if pd.notna(row["result_pct"]) and float(row["result_pct"]) > 0
+                               else f'<span style="color:#ff453a">{row["result_pct"]:+.2f}%</span>'
+                               if pd.notna(row["result_pct"])
+                               else '<span style="color:#636366">待结算</span>')
+                    with op_cols[i % 4]:
+                        st.markdown(f"""
+<div style="background:#1c1c1e;border-radius:14px;padding:16px 18px;margin-bottom:10px">
+  <div style="font-size:10px;color:#636366;letter-spacing:1px;text-transform:uppercase">{row['source']} · {row['code']}</div>
+  <div style="font-size:17px;font-weight:700;color:#f5f5f7;margin:4px 0">{row['name']}</div>
+  <div style="font-size:13px;color:#8e8e93;margin-bottom:10px">买入时间：14:45–14:55</div>
+  <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+    <span style="font-size:11px;color:#636366">买入价</span>
+    <span style="font-size:13px;font-weight:600;color:#f5f5f7">¥{price:.2f}</span>
+  </div>
+  <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+    <span style="font-size:11px;color:#636366">建议仓位</span>
+    <span style="font-size:13px;font-weight:600;color:#00d4aa">¥{pos:,.0f}（约{shares}股）</span>
+  </div>
+  <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+    <span style="font-size:11px;color:#636366">止损价</span>
+    <span style="font-size:13px;font-weight:600;color:#ff453a">¥{stop:.2f}（-3%）</span>
+  </div>
+  <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+    <span style="font-size:11px;color:#636366">目标价</span>
+    <span style="font-size:13px;font-weight:600;color:#30d158">¥{target:.2f}（+3%）</span>
+  </div>
+  <div style="border-top:1px solid #2c2c2e;padding-top:8px;display:flex;justify-content:space-between">
+    <span style="font-size:11px;color:#636366">次日结果</span>
+    <span style="font-size:12px;font-weight:600">{pnl_str}</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+        # ── 历史操作记录 ─────────────────────────────────────
+        st.markdown('<div class="bb-section" style="margin-top:20px">历史操作记录</div>',
                     unsafe_allow_html=True)
         if not hist_df.empty:
             disp = hist_df[["date", "source", "name", "code",
-                            "price", "score", "result_pct", "win"]].copy()
+                            "price", "position", "score", "result_pct", "pnl", "win"]].copy()
+            disp["position"] = pd.to_numeric(disp["position"], errors="coerce").apply(
+                lambda x: f"¥{x:,.0f}" if pd.notna(x) and x > 0 else "—")
             disp["result_pct"] = disp["result_pct"].apply(
                 lambda x: f"{x:+.2f}%" if pd.notna(x) else "待结算")
+            disp["pnl"] = pd.to_numeric(disp["pnl"], errors="coerce").apply(
+                lambda x: f"¥{x:+,.0f}" if pd.notna(x) else "—")
             disp["win"] = disp["win"].apply(
                 lambda x: "✅" if x == 1.0 else ("❌" if x == 0.0 else "—"))
-            disp.columns = ["日期", "来源", "名称", "代码", "推荐价", "得分", "收益", "结果"]
+            disp.columns = ["日期", "来源", "名称", "代码", "推荐价", "仓位", "得分", "收益%", "盈亏", "结果"]
             st.dataframe(disp, use_container_width=True, hide_index=True)
     else:
         st.markdown(
