@@ -147,6 +147,10 @@ def save_picks(df: pd.DataFrame, source: str, sentiment_level: int = None) -> in
     if df is None or df.empty:
         return 0
 
+    # 情绪极差（空仓信号），不建仓
+    if sentiment_level is not None and sentiment_level <= 1:
+        return 0
+
     col_map = {
         "名称": "name", "股票名称": "name",
         "代码": "code",
