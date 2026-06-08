@@ -1000,45 +1000,44 @@ with tab_picks:
             st.markdown('<div style="color:#3a3a5a;font-size:12px;padding:8px 0">今日暂无推荐记录</div>',
                         unsafe_allow_html=True)
         else:
-            # 只取有仓位的
             today_ops = today_ops[pd.to_numeric(today_ops["position"], errors="coerce") > 0].copy()
             if today_ops.empty:
                 st.markdown('<div style="color:#3a3a5a;font-size:12px;padding:8px 0">今日推荐仓位为0，建议观望</div>',
                             unsafe_allow_html=True)
             else:
-                op_cols = st.columns(min(len(today_ops), 4))
-                for i, (_, row) in enumerate(today_ops.iterrows()):
-                    price  = float(row["price"])
-                    pos    = float(row["position"])
-                    stop   = round(price * 0.97, 2)
-                    target = round(price * 1.03, 2)
-                    shares = int(pos / price / 100) * 100  # 取整到100股
-                    pnl_str = (f'<span style="color:#30d158">{row["result_pct"]:+.2f}%</span>'
-                               if pd.notna(row["result_pct"]) and float(row["result_pct"]) > 0
-                               else f'<span style="color:#ff453a">{row["result_pct"]:+.2f}%</span>'
-                               if pd.notna(row["result_pct"])
-                               else '<span style="color:#636366">待结算</span>')
-                    with op_cols[i % 4]:
-                        st.markdown(f"""
-<div style="background:#1c1c1e;border-radius:14px;padding:16px 18px;margin-bottom:10px">
-  <div style="font-size:10px;color:#636366;letter-spacing:1px;text-transform:uppercase">{row['source']} · {row['code']}</div>
+                def _render_op_cards(ops_df, accent_color):
+                    cols = st.columns(min(len(ops_df), 3))
+                    for i, (_, row) in enumerate(ops_df.iterrows()):
+                        price  = float(row["price"])
+                        pos    = float(row["position"])
+                        stop   = round(price * 0.97, 2)
+                        target = round(price * 1.03, 2)
+                        shares = int(pos / price / 100) * 100
+                        pnl_str = (f'<span style="color:#30d158">{float(row["result_pct"]):+.2f}%</span>'
+                                   if pd.notna(row["result_pct"]) and float(row["result_pct"]) > 0
+                                   else f'<span style="color:#ff453a">{float(row["result_pct"]):+.2f}%</span>'
+                                   if pd.notna(row["result_pct"])
+                                   else '<span style="color:#636366">待结算</span>')
+                        with cols[i % 3]:
+                            st.markdown(f"""
+<div style="background:#1c1c1e;border-left:3px solid {accent_color};border-radius:14px;padding:16px 18px;margin-bottom:10px">
+  <div style="font-size:10px;color:#636366;letter-spacing:1px;text-transform:uppercase">{row['code']} · 14:45–14:55买入</div>
   <div style="font-size:17px;font-weight:700;color:#f5f5f7;margin:4px 0">{row['name']}</div>
-  <div style="font-size:13px;color:#8e8e93;margin-bottom:10px">买入时间：14:45–14:55</div>
-  <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+  <div style="display:flex;justify-content:space-between;margin-bottom:5px;margin-top:10px">
     <span style="font-size:11px;color:#636366">买入价</span>
     <span style="font-size:13px;font-weight:600;color:#f5f5f7">¥{price:.2f}</span>
   </div>
-  <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+  <div style="display:flex;justify-content:space-between;margin-bottom:5px">
     <span style="font-size:11px;color:#636366">建议仓位</span>
-    <span style="font-size:13px;font-weight:600;color:#00d4aa">¥{pos:,.0f}（约{shares}股）</span>
+    <span style="font-size:13px;font-weight:600;color:{accent_color}">¥{pos:,.0f}（{shares}股）</span>
   </div>
-  <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-    <span style="font-size:11px;color:#636366">止损价</span>
-    <span style="font-size:13px;font-weight:600;color:#ff453a">¥{stop:.2f}（-3%）</span>
+  <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+    <span style="font-size:11px;color:#636366">止损</span>
+    <span style="font-size:12px;font-weight:600;color:#ff453a">¥{stop:.2f}（-3%）</span>
   </div>
   <div style="display:flex;justify-content:space-between;margin-bottom:10px">
-    <span style="font-size:11px;color:#636366">目标价</span>
-    <span style="font-size:13px;font-weight:600;color:#30d158">¥{target:.2f}（+3%）</span>
+    <span style="font-size:11px;color:#636366">目标</span>
+    <span style="font-size:12px;font-weight:600;color:#30d158">¥{target:.2f}（+3%）</span>
   </div>
   <div style="border-top:1px solid #2c2c2e;padding-top:8px;display:flex;justify-content:space-between">
     <span style="font-size:11px;color:#636366">次日结果</span>
@@ -1046,6 +1045,19 @@ with tab_picks:
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+                # 按来源拆成两栏
+                for _src, _clr in [("热门精选", "#00d4aa"), ("超短线", "#4da6ff")]:
+                    _ops = today_ops[today_ops["source"] == _src]
+                    if _ops.empty:
+                        continue
+                    _cap = _src_data[_src]["cur_capital"]
+                    st.markdown(
+                        f'<div style="font-size:12px;font-weight:600;color:{_clr};'
+                        f'margin:14px 0 6px 0">{_src} &nbsp;'
+                        f'<span style="color:#636366;font-weight:400">可用 ¥{_cap:,.0f}</span></div>',
+                        unsafe_allow_html=True)
+                    _render_op_cards(_ops, _clr)
 
         # ── 历史操作记录 ─────────────────────────────────────
         st.markdown('<div class="bb-section" style="margin-top:20px">历史操作记录</div>',
