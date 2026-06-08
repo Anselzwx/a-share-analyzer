@@ -579,3 +579,133 @@ def pick_hot_sectors(top_n_sectors: int = 5, stocks_per_sector: int = 4) -> list
         save(cache_key, pd.concat(frames, ignore_index=True))
 
     return result
+
+
+# 完整板块名称→同花顺代码映射
+_SECTOR_MAP_FULL = {
+    "半导体":       ("881121", "thshy"),
+    "光学光电子":   ("881129", "thshy"),
+    "消费电子":     ("881108", "thshy"),
+    "通信设备":     ("881101", "thshy"),
+    "软件开发":     ("881131", "thshy"),
+    "计算机设备":   ("881130", "thshy"),
+    "电子元件":     ("881122", "thshy"),
+    "芯片":         ("881121", "thshy"),
+    "机械设备":     ("881114", "thshy"),
+    "机器人":       ("881115", "thshy"),
+    "自动化设备":   ("881115", "thshy"),
+    "工程机械":     ("881116", "thshy"),
+    "电机":         ("881117", "thshy"),
+    "仪器仪表":     ("881118", "thshy"),
+    "轨交设备":     ("881119", "thshy"),
+    "电力":         ("881145", "thshy"),
+    "电池":         ("881127", "thshy"),
+    "光伏":         ("881128", "thshy"),
+    "风电":         ("881144", "thshy"),
+    "储能":         ("881127", "thshy"),
+    "国防军工":     ("881105", "thshy"),
+    "军工":         ("881105", "thshy"),
+    "航空航天":     ("881105", "thshy"),
+    "汽车零部件":   ("881125", "thshy"),
+    "智能驾驶":     ("881126", "thshy"),
+    "新能源车":     ("881126", "thshy"),
+    "银行":         ("881180", "thshy"),
+    "证券":         ("881181", "thshy"),
+    "保险":         ("881182", "thshy"),
+    "房地产":       ("881109", "thshy"),
+    "有色金属":     ("881104", "thshy"),
+    "钢铁":         ("881106", "thshy"),
+    "化工":         ("881113", "thshy"),
+    "煤炭":         ("881103", "thshy"),
+    "医疗器械":     ("881204", "thshy"),
+    "医药":         ("881201", "thshy"),
+    "食品饮料":     ("881301", "thshy"),
+    "零售":         ("881303", "thshy"),
+    "游戏":         ("881132", "thshy"),
+    "传媒":         ("881133", "thshy"),
+    "港口航运":     ("881401", "thshy"),
+    "物流":         ("881402", "thshy"),
+    # 概念板块
+    "人工智能":     ("308627", "thsgn"),
+    "AI":           ("308627", "thsgn"),
+    "大模型":       ("308736", "thsgn"),
+    "算力":         ("308666", "thsgn"),
+    "低空经济":     ("308748", "thsgn"),
+    "商业航天":     ("308734", "thsgn"),
+    "量子计算":     ("308697", "thsgn"),
+    "固态电池":     ("308756", "thsgn"),
+    "氢能":         ("308532", "thsgn"),
+    "核能":         ("308611", "thsgn"),
+}
+
+
+def pick_sector_by_name(sector_name: str, top_n: int = 5) -> pd.DataFrame:
+    """
+    按板块名称选出最适合超短线的主板股票（评分降序）。
+    支持模糊匹配：输入"机器人"可匹配"机器人/自动化设备"等。
+    返回 DataFrame，空 DataFrame 表示未找到或无候选。
+    """
+    from analysis.sector_analysis import fetch_sector_stocks
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
+    # 模糊匹配板块名
+    matched_key = None
+    for key in _SECTOR_MAP_FULL:
+        if sector_name in key or key in sector_name:
+            matched_key = key
+            break
+    if not matched_key:
+        return pd.DataFrame()
+
+    ths_code, stype = _SECTOR_MAP_FULL[matched_key]
+    try:
+        df = fetch_sector_stocks(ths_code, pages=2, sector_type=stype)
+    except Exception:
+        return pd.DataFrame()
+    if df.empty:
+        return pd.DataFrame()
+
+    # 仅主板
+    df = df[df["code"].apply(lambda c: c.startswith("60") or c.startswith("00"))]
+    for col in ["涨跌幅(%)", "量比"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df[df["涨跌幅(%)"] > 0]
+    df = df[df["量比"] >= 1.0]
+    if df.empty:
+        return pd.DataFrame()
+
+    candidates = df.head(30)
+    records = []
+
+    def _eval(row):
+        ind = _compute_indicators(row["code"])
+        if ind is None:
+            return None
+        fake_row = pd.Series({"排名较昨日变动": 500, "涨跌幅": row["涨跌幅(%)"]})
+        score, reason = _score_zt_potential(fake_row, ind)
+        return {
+            "名称": row["名称"],
+            "代码": row["code"],
+            "最新价": row["现价"],
+            "涨跌幅%": round(float(row["涨跌幅(%)"]), 2),
+            "量比": round(ind["vol_ratio_hist"], 2),
+            "RSI14": round(ind["rsi"], 1),
+            "60日区间位%": round(ind["range_pos"], 1),
+            "综合得分": score,
+            "买入理由": reason,
+        }
+
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futs = [ex.submit(_eval, r) for _, r in candidates.iterrows()]
+        for f in _as_completed(futs):
+            res = f.result()
+            if res:
+                records.append(res)
+
+    if not records:
+        return pd.DataFrame()
+
+    return (pd.DataFrame(records)
+            .sort_values("综合得分", ascending=False)
+            .head(top_n)
+            .reset_index(drop=True))

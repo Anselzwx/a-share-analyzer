@@ -20,6 +20,7 @@ from analysis.tracker import (save_picks, fill_results, get_stats, get_history,
                                get_sentiment_winrate)
 from analysis.sector_analysis import get_sector_top50, pick_sector_top5
 from analysis.short_term import pick_short_term_top5
+from analysis.hot_picks import pick_sector_by_name
 from ml.predictor import predict_batch
 from ml.train import load_models
 from ui.charts import (
@@ -1358,6 +1359,66 @@ with tab_short:
             '暂无合适候选，市场偏弱或数据获取失败，请稍后刷新。</div>',
             unsafe_allow_html=True,
         )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 板块自选选股 ──────────────────────────────────────────
+    st.markdown('<div class="bb-section">板块自选选股</div>', unsafe_allow_html=True)
+    sector_col, btn_col = st.columns([4, 1])
+    with sector_col:
+        sector_input = st.text_input(
+            "", placeholder="输入板块名称，如：机器人、半导体、AI、低空经济...",
+            label_visibility="collapsed", key="sector_search_input"
+        )
+    with btn_col:
+        sector_search_btn = st.button("选股", key="sector_search_btn", use_container_width=True)
+
+    if sector_search_btn and sector_input.strip():
+        with st.spinner(f"正在分析 [{sector_input.strip()}] 板块..."):
+            try:
+                df_sector = pick_sector_by_name(sector_input.strip(), top_n=5)
+            except Exception as e:
+                df_sector = pd.DataFrame()
+                st.error(f"板块选股失败：{e}")
+
+        if df_sector.empty:
+            st.markdown(
+                f'<div style="color:#636366;font-size:13px;padding:12px 0">'
+                f'未找到板块「{sector_input.strip()}」，或今日该板块无上涨主板股。'
+                f'<br>支持：机器人、半导体、AI、低空经济、军工、医药、银行 等</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<div style="font-size:12px;color:#636366;margin-bottom:8px">'
+                f'{sector_input.strip()} · 今日超短线推荐 Top{len(df_sector)}</div>',
+                unsafe_allow_html=True,
+            )
+            s_cols = st.columns(min(len(df_sector), 5))
+            for i, (_, row) in enumerate(df_sector.iterrows()):
+                pct = row["涨跌幅%"]
+                pct_str = f"+{pct:.2f}%" if pct >= 0 else f"{pct:.2f}%"
+                pct_cls = "short-pct-up" if pct >= 0 else "short-pct-dn"
+                score = row["综合得分"]
+                score_color = "#30d158" if score >= 75 else "#ffd60a" if score >= 55 else "#ff453a"
+                with s_cols[i]:
+                    st.markdown(f"""
+<div class="short-card">
+  <div class="short-rank">#{i+1} &nbsp;·&nbsp; {row['代码']}</div>
+  <div class="short-name">{row['名称']}</div>
+  <div class="short-price">¥{row['最新价']} <span class="{pct_cls}">{pct_str}</span></div>
+  <div class="short-tags">
+    <span class="short-tag {'short-tag-green' if row['量比'] >= 2 else 'short-tag'}">量比{row['量比']:.1f}x</span>
+    <span class="short-tag {'short-tag-green' if 45 <= row['RSI14'] <= 68 else 'short-tag-red' if row['RSI14'] > 75 else 'short-tag'}">RSI{row['RSI14']:.0f}</span>
+    <span class="short-tag {'short-tag-green' if row['60日区间位%'] < 50 else 'short-tag-red' if row['60日区间位%'] >= 85 else 'short-tag'}">{row['60日区间位%']:.0f}%位</span>
+  </div>
+  <div class="short-reason">{row['买入理由']}</div>
+  <div class="short-score-bar">
+    <div style="width:{min(int(score),100)}%;height:3px;background:{score_color};border-radius:2px"></div>
+  </div>
+  <div style="font-size:10px;color:#636366;margin-top:3px;text-align:right">{score:.0f}/100</div>
+</div>
+""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
