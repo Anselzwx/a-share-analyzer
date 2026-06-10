@@ -361,6 +361,59 @@ def load_us_signal(_key: str):
             result[sym] = None
     return result
 
+@st.cache_data(ttl=3600, show_spinner="计算A股半导体相关性排名...")
+def load_semi_corr():
+    import yfinance as yf
+    import requests as _req
+
+    a_stocks = {
+        '澜起科技': '688008', '通富微电': '002156', '长电科技': '600584',
+        '韦尔股份': '603501', '士兰微':   '600460', '北方华创': '002371',
+        '华虹半导体':'688347', '寒武纪':   '688256', '中微公司': '688012',
+        '晶晨股份': '688099',
+    }
+    foreign_tickers = {
+        'SOX': '^SOX', 'MU美光': 'MU', '台积电TSM': 'TSM',
+        'SK海力士': '000660.KS', '三星': '005930.KS',
+    }
+
+    def _sina(code, n=120):
+        prefix = 'sh' if code.startswith('6') else 'sz'
+        url = (f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+               f'CN_MarketData.getKLineData?symbol={prefix}{code}&scale=240&ma=no&datalen={n}')
+        r = _req.get(url, headers={'Referer':'https://finance.sina.com.cn','User-Agent':'Mozilla/5.0'}, timeout=10)
+        df = pd.DataFrame(r.json())
+        df['day'] = pd.to_datetime(df['day'])
+        return df.set_index('day')['close'].astype(float)
+
+    try:
+        foreign = {}
+        for name, sym in foreign_tickers.items():
+            raw = yf.download(sym, start='2025-06-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
+            raw.index = pd.to_datetime(raw.index)
+            foreign[name] = raw.pct_change().dropna()
+
+        import numpy as _np
+        rows = []
+        for aname, code in a_stocks.items():
+            try:
+                ar = _sina(code).pct_change().dropna()
+            except Exception:
+                continue
+            row = {'股票': aname}
+            for fn, fr in foreign.items():
+                pairs = [(fr.loc[prev[-1]], ar.loc[dt])
+                         for dt in ar.index
+                         if len(prev := fr.index[fr.index < dt]) > 0]
+                row[fn] = float(_np.corrcoef([x[0] for x in pairs], [x[1] for x in pairs])[0,1]) if pairs else 0.0
+            row['最强信号'] = max(foreign.keys(), key=lambda k: row.get(k, 0))
+            rows.append(row)
+
+        df = pd.DataFrame(rows).sort_values('SOX', ascending=False)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 @st.cache_data(ttl=1800, show_spinner="计算历史回测...")
 def load_backtest_stats():
     import yfinance as yf
@@ -2555,3 +2608,30 @@ with tab_semi_signal:
         st.dataframe(styled, use_container_width=True, height=min(n_days * 35 + 50, 600))
     else:
         st.warning("回测数据加载失败")
+
+    # ── 相关性排名 ───────────────────────────────────────────
+    st.markdown("#### A股半导体与外股相关性排名（过去1年）")
+    st.caption("前置信号：取A股当日之前最近一个美股/港股收盘日，计算同向相关系数")
+    corr_df = load_semi_corr()
+    if not corr_df.empty:
+        factor_cols = ['SOX', 'MU美光', '台积电TSM', 'SK海力士', '三星']
+
+        def _color_corr(val):
+            try:
+                v = float(val)
+                if v >= 0.35: return 'color: #30d158; font-weight: 700'
+                if v >= 0.25: return 'color: #30d158'
+                if v >= 0.15: return 'color: #ffd60a'
+                if v < 0:     return 'color: #ff453a'
+                return 'color: #8e8e93'
+            except: return ''
+
+        display = corr_df.copy()
+        for col in factor_cols:
+            if col in display.columns:
+                display[col] = display[col].apply(lambda x: f"{x:+.3f}")
+        styled_corr = display.set_index('股票').style.map(
+            _color_corr, subset=[c for c in factor_cols if c in display.columns]
+        )
+        st.dataframe(styled_corr, use_container_width=True)
+        st.caption("🟢 >0.35强相关  🟡 0.15-0.35中等  ⚫ <0.15弱  🔴 负相关")
