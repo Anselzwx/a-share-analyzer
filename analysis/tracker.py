@@ -12,6 +12,7 @@ import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta
+from typing import Optional
 
 # CSV 存储路径：相对于本文件所在目录的 ../cache/
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -213,7 +214,7 @@ def save_picks(df: pd.DataFrame, source: str, sentiment_level: int = None) -> in
     return max(added, 0)
 
 
-def _get_next_trading_open(code: str, pick_date: str) -> float | None:
+def _get_next_trading_open(code: str, pick_date: str) -> Optional[float]:
     """
     用 akshare stock_zh_a_hist 获取 pick_date 之后第一个交易日的开盘价。
     结算逻辑：买入价=当日收盘，卖出价=次日开盘，模拟高开卖出。
