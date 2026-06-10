@@ -2528,13 +2528,30 @@ with tab_semi_signal:
                     unsafe_allow_html=True
                 )
 
-        # 近期信号历史
-        st.markdown("#### 近10日信号记录")
-        recent = bt_df.tail(10)[['date','sox','mu','signal','sl_ret','cd_ret']].copy()
+        # 历史信号记录
+        st.markdown("#### 历史信号记录")
+        n_days = st.slider("显示最近N个交易日", min_value=10, max_value=len(bt_df), value=30, step=5, key="signal_days")
+        recent = bt_df.tail(n_days)[['date','sox','mu','signal','sl_ret','cd_ret']].copy()
         recent.columns = ['日期','SOX涨跌%','MU涨跌%','信号','士兰微次日%','长电次日%']
-        recent['日期'] = recent['日期'].dt.strftime('%m-%d')
+        recent['日期'] = recent['日期'].dt.strftime('%Y-%m-%d')
+
+        def _color_signal(val):
+            if val == '做多': return 'color: #30d158; font-weight: 600'
+            if val == '空仓': return 'color: #ff453a; font-weight: 600'
+            return 'color: #ffd60a'
+
+        def _color_pct(val):
+            try:
+                v = float(str(val).replace('%',''))
+                return f'color: {"#30d158" if v > 0 else "#ff453a" if v < 0 else "#636366"}'
+            except: return ''
+
         for col in ['SOX涨跌%','MU涨跌%','士兰微次日%','长电次日%']:
             recent[col] = recent[col].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "-")
-        st.dataframe(recent.set_index('日期'), use_container_width=True)
+
+        styled = recent.set_index('日期').style\
+            .map(_color_signal, subset=['信号'])\
+            .map(_color_pct, subset=['SOX涨跌%','MU涨跌%','士兰微次日%','长电次日%'])
+        st.dataframe(styled, use_container_width=True, height=min(n_days * 35 + 50, 600))
     else:
         st.warning("回测数据加载失败")
