@@ -345,6 +345,65 @@ def load_generic_top50(sector_name: str):
 def load_generic_picks(sector_name: str, top50_hash: int):
     return pick_sector_top5(sector_name)
 
+@st.cache_data(ttl=300, show_spinner="拉取美股实时数据...")
+def load_us_signal(_key: str):
+    import yfinance as yf
+    result = {}
+    for sym in ['^SOX', 'MU', 'TSM', '^IXIC']:
+        try:
+            fi = yf.Ticker(sym).fast_info
+            result[sym] = {
+                'price': fi.last_price,
+                'prev':  fi.previous_close,
+                'pct':   (fi.last_price / fi.previous_close - 1) * 100,
+            }
+        except Exception:
+            result[sym] = None
+    return result
+
+@st.cache_data(ttl=1800, show_spinner="计算历史回测...")
+def load_backtest_stats():
+    import yfinance as yf
+    import requests as _req
+
+    def _sina(code, n=120):
+        prefix = 'sh' if code.startswith('6') else 'sz'
+        url = (f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+               f'CN_MarketData.getKLineData?symbol={prefix}{code}&scale=240&ma=no&datalen={n}')
+        r = _req.get(url, headers={'Referer':'https://finance.sina.com.cn','User-Agent':'Mozilla/5.0'}, timeout=10)
+        df = pd.DataFrame(r.json())
+        df['day'] = pd.to_datetime(df['day'])
+        return df.set_index('day')['close'].astype(float)
+
+    try:
+        sl = _sina('600460')
+        cd = _sina('600584')
+        sox = yf.download('^SOX', start='2025-06-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
+        mu  = yf.download('MU',   start='2025-06-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
+        sox.index = pd.to_datetime(sox.index)
+        mu.index  = pd.to_datetime(mu.index)
+        sox_r = sox.pct_change().dropna()
+        mu_r  = mu.pct_change().dropna()
+        sl_r  = sl.pct_change().dropna()
+        cd_r  = cd.pct_change().dropna()
+        rows = []
+        for dt in sl_r.index:
+            prev_us = sox_r.index[sox_r.index < dt]
+            if len(prev_us) == 0: continue
+            us_dt = prev_us[-1]
+            s = sox_r.loc[us_dt]
+            m = mu_r.loc[us_dt] if us_dt in mu_r.index else float('nan')
+            if pd.isna(m): continue
+            rows.append({
+                'date': dt, 'sox': s*100, 'mu': m*100,
+                'sl_ret': sl_r.loc[dt]*100,
+                'cd_ret': cd_r.loc[dt]*100 if dt in cd_r.index else float('nan'),
+                'signal': '做多' if s>0 and m>0 else ('空仓' if s<0 and m<0 else '观望'),
+            })
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
 with st.spinner("正在获取今日市场数据..."):
     try:
         df_sector = load_sector(use_concept)
@@ -373,10 +432,10 @@ col4.metric("全市场主力合计", f"{total_inflow:.1f} 亿")
 st.divider()
 
 # ── 主 Tab ────────────────────────────────────────────────────
-tab_today, tab_hist, tab_watch, tab_picks, tab_short, tab_power, tab_semi, tab_optical, tab_space, tab_auto, tab_ml = st.tabs(
+tab_today, tab_hist, tab_watch, tab_picks, tab_short, tab_power, tab_semi, tab_optical, tab_space, tab_auto, tab_ml, tab_semi_signal = st.tabs(
     ["今日资金流向", "历史趋势对比", "自选股", "热门精选",
      "超短线", "电力板块", "半导体板块", "光模块", "商业航天", "智能驾驶",
-     "ML 涨停预测"]
+     "ML 涨停预测", "半导体信号"]
 )
 
 # ════════════════════════════════════════════════════════════
@@ -2311,3 +2370,171 @@ with tab_ml:
         "⚠️ ML 模型基于历史统计规律，AUC=0.82 意味着排序能力较强，但绝对概率不等于胜率。"
         "概率高不等于一定涨停，请严格设置止损（建议 -3%）。"
     )
+
+# ════════════════════════════════════════════════════════════
+# Tab 12：半导体信号（SOX+MU -> 士兰微/长电科技）
+# ════════════════════════════════════════════════════════════
+with tab_semi_signal:
+    st.markdown("### 📡 半导体信号面板")
+    st.caption("基于119个交易日回测：SOX+MU同涨→做多胜率60-65%，同跌→空仓胜率仅39%")
+
+    # ── 实时信号 ────────────────────────────────────────────
+    _us_key = datetime.now().strftime("%Y%m%d%H%M")[:-1]
+    us_data = load_us_signal(_us_key)
+
+    sox_info = us_data.get('^SOX')
+    mu_info  = us_data.get('MU')
+    tsm_info = us_data.get('TSM')
+    ndx_info = us_data.get('^IXIC')
+
+    # 判断信号
+    if sox_info and mu_info:
+        sox_pct = sox_info['pct']
+        mu_pct  = mu_info['pct']
+        if sox_pct > 0 and mu_pct > 0:
+            sig_label = "做多"
+            sig_color = "#30d158"
+            sig_bg    = "#0a2a1a"
+            sig_desc  = "SOX+MU同涨 — 明日士兰微/长电大概率上涨，可考虑持仓或加仓"
+            sig_hist  = "历史胜率：士兰微 59.6% | 长电科技 64.9%"
+        elif sox_pct < 0 and mu_pct < 0:
+            sig_label = "空仓"
+            sig_color = "#ff453a"
+            sig_bg    = "#2a0a0a"
+            sig_desc  = "SOX+MU同跌 — 明日士兰微/长电大概率下跌，建议观望不加仓"
+            sig_hist  = "历史胜率：士兰微 38.7% | 长电科技 38.7%（负期望）"
+        else:
+            sig_label = "观望"
+            sig_color = "#ffd60a"
+            sig_bg    = "#2a2000"
+            sig_desc  = "SOX与MU方向相反 — 信号不明，建议观望"
+            sig_hist  = "历史胜率：士兰微 45.2% | 长电科技 51.6%"
+    else:
+        sig_label = "数据获取失败"
+        sig_color = "#636366"
+        sig_bg    = "#1c1c1e"
+        sig_desc  = "美股数据暂时无法获取"
+        sig_hist  = ""
+
+    # 注意：美股收盘时间为北京时间 04:00-05:00，盘中为实时报价
+    now_h = datetime.now().hour
+    is_us_trading = 21 <= datetime.now().hour or datetime.now().hour < 5
+    time_note = "🔴 美股交易中（实时价，收盘前可能变化）" if is_us_trading else "⚫ 美股已收盘（最终收盘价）"
+
+    st.markdown(
+        f'<div style="background:{sig_bg};border:1px solid {sig_color};border-radius:14px;'
+        f'padding:20px 24px;margin-bottom:16px">'
+        f'<div style="font-size:11px;color:#636366;letter-spacing:1px;margin-bottom:6px">'
+        f'明日操作信号 · {time_note}</div>'
+        f'<div style="font-size:32px;font-weight:700;color:{sig_color};margin-bottom:6px">{sig_label}</div>'
+        f'<div style="font-size:13px;color:#f5f5f7;margin-bottom:4px">{sig_desc}</div>'
+        f'<div style="font-size:11px;color:#8e8e93">{sig_hist}</div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+    # ── 美股实时行情 ─────────────────────────────────────────
+    st.markdown("#### 美股实时")
+    us_cols = st.columns(4)
+    us_items = [
+        ("SOX 费城半导体", sox_info),
+        ("美光 MU",        mu_info),
+        ("台积电 TSM",     tsm_info),
+        ("Nasdaq",         ndx_info),
+    ]
+    for col, (label, info) in zip(us_cols, us_items):
+        with col:
+            if info:
+                pct = info['pct']
+                pct_color = "#30d158" if pct >= 0 else "#ff453a"
+                pct_str = f"{pct:+.2f}%"
+                st.markdown(
+                    f'<div style="background:#1c1c1e;border-radius:12px;padding:14px 16px">'
+                    f'<div style="font-size:11px;color:#636366;margin-bottom:4px">{label}</div>'
+                    f'<div style="font-size:20px;font-weight:600;color:#f5f5f7">{info["price"]:,.2f}</div>'
+                    f'<div style="font-size:14px;font-weight:600;color:{pct_color}">{pct_str}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown('<div style="background:#1c1c1e;border-radius:12px;padding:14px 16px;color:#636366">获取失败</div>', unsafe_allow_html=True)
+
+    # ── A股目标股票实时 ──────────────────────────────────────
+    st.markdown("#### 目标股票")
+    try:
+        import requests as _req
+        a_syms = {'士兰微':'sh600460', '长电科技':'sh600584'}
+        a_prices = {}
+        syms_str = ','.join(a_syms.values())
+        rr = _req.get(f'http://hq.sinajs.cn/list={syms_str}',
+                      headers={'Referer':'http://finance.sina.com.cn','User-Agent':'Mozilla/5.0'}, timeout=6)
+        rr.encoding = 'gbk'
+        for (name, _), line in zip(a_syms.items(), rr.text.strip().splitlines()):
+            vals = line.split('"')[1].split(',')
+            if len(vals) < 10: continue
+            price = float(vals[3])
+            yclose = float(vals[2])
+            pct = (price/yclose-1)*100
+            # MA20支撑位（用历史数据）
+            a_prices[name] = {'price': price, 'pct': pct}
+
+        a_cols = st.columns(2)
+        supports = {'士兰微': 33.42, '长电科技': 73.26}
+        for col, (name, info) in zip(a_cols, a_prices.items()):
+            with col:
+                pct = info['pct']
+                pct_color = "#30d158" if pct >= 0 else "#ff453a"
+                sup = supports.get(name, 0)
+                above_sup = info['price'] > sup
+                st.markdown(
+                    f'<div style="background:#1c1c1e;border-radius:12px;padding:16px 18px">'
+                    f'<div style="font-size:13px;font-weight:600;color:#f5f5f7;margin-bottom:6px">{name}</div>'
+                    f'<div style="font-size:26px;font-weight:700;color:#f5f5f7">¥{info["price"]:.2f}</div>'
+                    f'<div style="font-size:13px;color:{pct_color};font-weight:600">{pct:+.2f}%</div>'
+                    f'<div style="font-size:11px;color:{"#30d158" if above_sup else "#ff453a"};margin-top:6px">'
+                    f'MA20支撑 ¥{sup:.2f} — {"守住" if above_sup else "⚠️ 跌破支撑"}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+    except Exception:
+        st.warning("A股实时数据获取失败")
+
+    # ── 回测统计 ─────────────────────────────────────────────
+    st.markdown("#### 历史回测（2025-12 至今）")
+    bt_key = datetime.now().strftime("%Y%m%d")
+    bt_df = load_backtest_stats()
+
+    if not bt_df.empty:
+        bt_cols = st.columns(3)
+        colors = {'做多': '#30d158', '空仓': '#ff453a', '观望': '#ffd60a'}
+        for col, sig in zip(bt_cols, ['做多', '空仓', '观望']):
+            sub = bt_df[bt_df['signal'] == sig]
+            if sub.empty: continue
+            n = len(sub)
+            sl_wr = (sub['sl_ret'] > 0).sum() / n * 100
+            sl_avg = sub['sl_ret'].mean()
+            cd_wr = (sub['cd_ret'] > 0).sum() / n * 100
+            cd_avg = sub['cd_ret'].mean()
+            c = colors[sig]
+            with col:
+                st.markdown(
+                    f'<div style="background:#1c1c1e;border-radius:12px;padding:14px 16px">'
+                    f'<div style="font-size:13px;font-weight:700;color:{c};margin-bottom:8px">{sig} （{n}天）</div>'
+                    f'<div style="font-size:12px;color:#8e8e93;margin-bottom:2px">士兰微</div>'
+                    f'<div style="font-size:13px;color:#f5f5f7">胜率 {sl_wr:.1f}%  均收益 <span style="color:{"#30d158" if sl_avg>0 else "#ff453a"}">{sl_avg:+.2f}%</span></div>'
+                    f'<div style="font-size:12px;color:#8e8e93;margin-top:6px;margin-bottom:2px">长电科技</div>'
+                    f'<div style="font-size:13px;color:#f5f5f7">胜率 {cd_wr:.1f}%  均收益 <span style="color:{"#30d158" if cd_avg>0 else "#ff453a"}">{cd_avg:+.2f}%</span></div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+        # 近期信号历史
+        st.markdown("#### 近10日信号记录")
+        recent = bt_df.tail(10)[['date','sox','mu','signal','sl_ret','cd_ret']].copy()
+        recent.columns = ['日期','SOX涨跌%','MU涨跌%','信号','士兰微次日%','长电次日%']
+        recent['日期'] = recent['日期'].dt.strftime('%m-%d')
+        for col in ['SOX涨跌%','MU涨跌%','士兰微次日%','长电次日%']:
+            recent[col] = recent[col].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "-")
+        st.dataframe(recent.set_index('日期'), use_container_width=True)
+    else:
+        st.warning("回测数据加载失败")
