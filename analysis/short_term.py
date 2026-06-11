@@ -250,165 +250,164 @@ def _score_short(row: pd.Series, ind: dict) -> tuple:
 
     pct = row["pct"]
 
-    # 1. 今日涨幅区间 20分（3-7%最佳：有动量、不超买）
+    # 1. 涨幅区间 (13分)
     if 3 <= pct <= 7:
-        score += 20
-        reasons.append(f"今日+{pct:.1f}%动量区")
+        score += 13
+        reasons.append(f"+{pct:.1f}%动量区")
     elif 2 <= pct < 3:
-        score += 14
-        reasons.append(f"今日+{pct:.1f}%启动")
+        score += 9
+        reasons.append(f"+{pct:.1f}%启动")
     elif 7 < pct <= 8.5:
-        score += 10
-        reasons.append(f"今日+{pct:.1f}%偏强")
+        score += 7
+        reasons.append(f"+{pct:.1f}%偏强")
     else:
-        score += 5
+        score += 3
 
-    # 2. EMA趋势 25分
+    # 2. EMA趋势 (17分)
     if ind["full_bull"]:
-        score += 25
+        score += 17
         reasons.append("价格>EMA21>EMA50多头")
     elif ind["price_above_ema21"]:
-        score += 17
-        reasons.append(f"价格>EMA21({ind['ema21']:.2f})")
+        score += 11
+        reasons.append(f"价格>EMA21")
     if ind["ema21_slope"] > 0.5:
-        score += 5
+        score += 3
         reasons.append(f"EMA21↑{ind['ema21_slope']:.1f}%")
     elif ind["ema21_slope"] < -0.3:
-        score -= 5
-        risks.append("EMA21下行⚠")
+        score -= 3
+        risks.append("EMA21↓⚠")
 
-    # 3. RSI 20分
+    # 3. RSI (13分)
     rsi = ind["rsi"]
     if 45 <= rsi <= 68:
-        score += 20
+        score += 13
         reasons.append(f"RSI={rsi:.0f}健康")
     elif 35 <= rsi < 45:
-        score += 12
+        score += 8
         reasons.append(f"RSI={rsi:.0f}低位回升")
     elif 68 < rsi <= 78:
-        score += 8
+        score += 5
     elif rsi > 78:
-        score += 2
+        score += 1
         risks.append(f"RSI={rsi:.0f}超买⚠")
     else:
-        score += 5
+        score += 3
 
-    # 4. 量比 15分（超短线必须放量）
+    # 4. 量比 (10分)
     vr = ind["vol_ratio"]
     if vr >= 2.5:
-        score += 15
+        score += 10
         reasons.append(f"量比{vr:.1f}x爆量")
     elif vr >= 1.8:
-        score += 11
+        score += 7
         reasons.append(f"量比{vr:.1f}x放量")
     elif vr >= 1.3:
-        score += 7
+        score += 5
         reasons.append(f"量比{vr:.1f}x")
     else:
-        score += 2
+        score += 1
         risks.append(f"量比{vr:.1f}x偏弱⚠")
 
-    # 5. MACD/KDJ 金叉加分 10分
+    # 5. MACD/KDJ 金叉 (7分)
     if ind["macd_cross"]:
-        score += 6
-        reasons.append("MACD今日金叉")
+        score += 4
+        reasons.append("MACD金叉")
     elif ind["macd_above_zero"] and ind["macd_bar"] > 0:
-        score += 3
+        score += 2
         reasons.append("MACD零轴上方")
     if ind["kdj_cross"]:
-        score += 4
-        reasons.append("KDJ今日金叉")
+        score += 3
+        reasons.append("KDJ金叉")
 
-    # 6. 区间位置 10分
+    # 6. 区间位置 (7分)
     rp = ind["range_pos"]
     if rp < 50:
-        score += 10
+        score += 7
         reasons.append(f"低位{rp:.0f}%")
     elif rp < 70:
-        score += 6
+        score += 4
     elif rp < 85:
-        score += 2
+        score += 1
     else:
-        risks.append(f"区间高位{rp:.0f}%⚠")
+        risks.append(f"高位{rp:.0f}%⚠")
 
-    # 性价比加分：涨幅<3% 但量比>2，说明刚启动未追高
+    # 性价比加分 (5分)
     if pct < 3 and ind["vol_ratio"] >= 2.0:
-        score += 8
-        reasons.append(f"性价比佳(+{pct:.1f}%未追高)")
+        score += 5
+        reasons.append(f"性价比佳未追高")
 
-    # 风险扣分：近3日有大跌
+    # 近3日大跌扣分
     if ind["max_down_3d"] < -4:
-        score -= 8
-        risks.append(f"近3日最大跌{ind['max_down_3d']:.1f}%")
+        score -= 5
+        risks.append(f"近3日跌{ind['max_down_3d']:.1f}%⚠")
     elif ind["max_down_3d"] < -2.5:
-        score -= 4
+        score -= 3
 
     # 5日涨幅过大扣分
     if ind["gain_5d"] > 25:
-        score -= 8
-        risks.append(f"5日已涨{ind['gain_5d']:.1f}%过热")
+        score -= 5
+        risks.append(f"5日涨{ind['gain_5d']:.1f}%过热")
     elif ind["gain_5d"] > 15:
-        score -= 4
+        score -= 3
 
-    # 性价比标记（供外部判断）
     value_play = pct < 3 and ind["vol_ratio"] >= 2.0
 
-    # 板块资金流入（最多15分）
+    # 7. 板块资金流入 (10分)
     sector_inflow = ind.get("sector_inflow_pct", None)
     if sector_inflow is not None:
         if sector_inflow <= 30:
-            score += 15
-            reasons.append(f"板块净流入前{sector_inflow:.0f}%")
+            score += 10
+            reasons.append(f"板块流入前{sector_inflow:.0f}%")
         elif sector_inflow <= 60:
-            score += 8
+            score += 5
         elif sector_inflow > 80:
-            score -= 8
-            risks.append("板块净流出⚠")
+            score -= 5
+            risks.append("板块流出⚠")
 
-    # 北向资金（最多8分）
+    # 8. 北向资金 (5分)
     north = ind.get("northbound_net", 0.0)
     if north > 20:
-        score += 8
-        reasons.append(f"北向净买入{north:.0f}亿")
+        score += 5
+        reasons.append(f"北向+{north:.0f}亿")
     elif north > 5:
-        score += 4
+        score += 3
     elif north < -20:
-        score -= 6
-        risks.append(f"北向净卖出{abs(north):.0f}亿⚠")
+        score -= 4
+        risks.append(f"北向-{abs(north):.0f}亿⚠")
 
-    # 板块龙头涨停带动（最多10分）
+    # 9. 板块龙头涨停 (7分)
     sec_zt = ind.get("sector_limit_up_count", 0)
     sec_lb = ind.get("sector_lianban_max", 0)
     if sec_lb >= 3:
-        score += 10
+        score += 7
         reasons.append(f"板块{sec_lb}连板龙头")
     elif sec_lb >= 2:
-        score += 6
+        score += 4
         reasons.append(f"板块{sec_lb}连板")
     elif sec_zt >= 3:
-        score += 4
+        score += 3
         reasons.append(f"板块{sec_zt}只涨停")
     elif sec_zt >= 1:
-        score += 2
+        score += 1
 
-    # 连板股本身扣分
+    # 10. 连板自身扣分 (-7分)
     if ind.get("is_lianban", False):
-        score -= 10
-        risks.append("自身连板高位⚠")
+        score -= 7
+        risks.append("自身连板⚠")
 
-    # 换手率历史分位（最多8分）
+    # 11. 换手率分位 (6分)
     turnover_rank = ind.get("turnover_rank", None)
     if turnover_rank is not None:
         if turnover_rank >= 80:
-            score += 8
-            reasons.append(f"换手率{turnover_rank:.0f}分位爆发")
+            score += 6
+            reasons.append(f"换手{turnover_rank:.0f}分位")
         elif turnover_rank >= 60:
-            score += 4
+            score += 3
         elif turnover_rank < 30:
-            score -= 4
-            risks.append(f"换手率{turnover_rank:.0f}分位低迷⚠")
+            score -= 3
+            risks.append(f"换手低迷⚠")
 
-    return round(score, 1), "，".join(reasons), "，".join(risks) if risks else "无明显风险", value_play
+    return round(min(score, 100), 1), "，".join(reasons), "，".join(risks) if risks else "无明显风险", value_play
 
 
 def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:

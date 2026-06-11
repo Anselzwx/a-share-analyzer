@@ -309,172 +309,159 @@ def _compute_indicators(code: str) -> dict:
 
 def _score_zt_potential(row: pd.Series, ind: dict) -> tuple:
     """
-    涨停潜力评分（满分100），返回 (score, reason_str)。
-
-    维度：
-      热度爆发（排名急升）         20分
-      当前涨幅区间（3-9%蓄势）     20分
-      量比爆量                     20分
-      均线多头 + RSI上行动能       20分
-      形态加分（突破/蓄力）        10分
-      区间位置安全                 10分
+    涨停潜力评分，归一化到100分，返回 (score, reason_str)。
+    原始满分141分，乘以100/141缩放到100。
     """
     score = 0.0
     reasons = []
 
-    # 1. 热度爆发（排名上升越快，说明资金越集中涌入）
+    # 1. 热度爆发 (14分)
     rank_rise = row["排名较昨日变动"]
-    heat_score = min(rank_rise / 250, 1.0) * 20
+    heat_score = min(rank_rise / 250, 1.0) * 14
     score += heat_score
     if rank_rise >= 2000:
         reasons.append(f"热度急升{rank_rise}位")
 
-    # 2. 当前涨幅：3-9% 是"蓄势待涨停"的黄金区间
+    # 2. 涨幅区间 (14分)
     pct = row["涨跌幅"]
     if 5 <= pct <= 8:
-        score += 20
+        score += 14
         reasons.append(f"涨{pct:.1f}%蓄势区")
     elif 3 <= pct < 5:
-        score += 15
+        score += 11
         reasons.append(f"涨{pct:.1f}%启动中")
     elif 8 < pct < 9.5:
-        score += 12
+        score += 8
         reasons.append(f"涨{pct:.1f}%逼近涨停")
     elif 1 <= pct < 3:
-        score += 6
-    else:
-        score += 0
+        score += 4
 
-    # 3. 量比爆量（涨停前必须放量，量比<1.5基本无望）
+    # 3. 量比爆量 (14分)
     vr = ind["vol_ratio_hist"]
     if vr >= 3.0:
-        score += 20
+        score += 14
         reasons.append(f"量比{vr:.1f}x爆量")
     elif vr >= 2.0:
-        score += 15
+        score += 11
         reasons.append(f"量比{vr:.1f}x放量")
     elif vr >= 1.5:
-        score += 9
+        score += 6
         reasons.append(f"量比{vr:.1f}x温和")
     elif vr >= 1.0:
-        score += 4
+        score += 3
     else:
-        score += 0
         reasons.append(f"量比{vr:.1f}x缩量⚠")
 
-    # 4. EMA趋势 + RSI上行动能
-    # EMA多头排列：价格 > EMA21 > EMA50（最强信号）
+    # 4. EMA趋势 + RSI (14分)
     if ind["full_bull"]:
-        score += 12
+        score += 8
         reasons.append("价格>EMA21>EMA50多头")
     elif ind["price_above_ema21"]:
-        score += 8
+        score += 6
         reasons.append("价格>EMA21")
     elif ind["ma5"] > ind["ma20"]:
-        score += 4
+        score += 3
 
-    # EMA21斜率向上加分
     if ind["ema21_slope"] > 1.0:
-        score += 4
-        reasons.append(f"EMA21↑斜率{ind['ema21_slope']:.1f}%")
+        score += 3
+        reasons.append(f"EMA21↑{ind['ema21_slope']:.1f}%")
     elif ind["ema21_slope"] < -0.5:
-        score -= 3
-        reasons.append("EMA21↓走弱⚠")
+        score -= 2
+        reasons.append("EMA21↓⚠")
 
     rsi = ind["rsi"]
     rsi_mom = ind["rsi_momentum"]
     if 50 <= rsi <= 75 and rsi_mom > 5:
-        score += 8
-        reasons.append(f"RSI={rsi:.0f}加速上行")
+        score += 6
+        reasons.append(f"RSI={rsi:.0f}↑")
     elif 45 <= rsi <= 75:
-        score += 5
+        score += 3
         reasons.append(f"RSI={rsi:.0f}")
     elif rsi > 80:
-        score -= 5
+        score -= 4
         reasons.append(f"RSI={rsi:.0f}过热⚠")
 
-    # 5. 形态加分
+    # 5. 形态 (7分)
     if ind["near_breakout"]:
-        score += 6
-        reasons.append("突破前高形态")
-    if ind["has_pullback"]:
         score += 4
-        reasons.append("缩量蓄力后放量")
+        reasons.append("突破前高")
+    if ind["has_pullback"]:
+        score += 3
+        reasons.append("缩量蓄力")
 
-    # 6. 区间位置（不能太高，高位涨停风险大）
+    # 6. 区间位置 (7分)
     rp = ind["range_pos"]
     if rp < 60:
-        score += 10
-        reasons.append(f"区间低位{rp:.0f}%")
+        score += 7
+        reasons.append(f"低位{rp:.0f}%")
     elif rp < 80:
-        score += 5
+        score += 4
     else:
-        score += 0
-        reasons.append(f"区间高位{rp:.0f}%⚠")
+        reasons.append(f"高位{rp:.0f}%⚠")
 
-    # 5日涨幅过大则减分（短期累涨过多，上冲乏力）
+    # 5日涨幅过大扣分
     if ind["gain_5d"] > 30:
-        score -= 10
-        reasons.append(f"5日已涨{ind['gain_5d']:.0f}%过热")
+        score -= 7
+        reasons.append(f"5日涨{ind['gain_5d']:.0f}%过热")
     elif ind["gain_5d"] > 20:
-        score -= 5
+        score -= 4
 
-    # 7. 板块资金流入（最多15分）
+    # 7. 板块资金流入 (11分)
     sector_inflow = ind.get("sector_inflow_pct", None)
     if sector_inflow is not None:
         if sector_inflow <= 30:
-            score += 15
-            reasons.append(f"板块净流入前{sector_inflow:.0f}%")
+            score += 11
+            reasons.append(f"板块流入前{sector_inflow:.0f}%")
         elif sector_inflow <= 60:
-            score += 8
+            score += 6
         elif sector_inflow > 80:
-            score -= 8
-            reasons.append("板块净流出⚠")
+            score -= 6
+            reasons.append("板块流出⚠")
 
-    # 8. 北向资金（最多8分）
+    # 8. 北向资金 (6分)
     north = ind.get("northbound_net", 0.0)
     if north > 20:
-        score += 8
-        reasons.append(f"北向净买入{north:.0f}亿")
+        score += 6
+        reasons.append(f"北向+{north:.0f}亿")
     elif north > 5:
-        score += 4
+        score += 3
     elif north < -20:
-        score -= 6
-        reasons.append(f"北向净卖出{abs(north):.0f}亿⚠")
+        score -= 4
+        reasons.append(f"北向-{abs(north):.0f}亿⚠")
 
-    # 9. 板块龙头涨停带动（最多10分）
+    # 9. 板块龙头涨停 (7分)
     sec_zt = ind.get("sector_limit_up_count", 0)
     sec_lb = ind.get("sector_lianban_max", 0)
     if sec_lb >= 3:
-        score += 10
+        score += 7
         reasons.append(f"板块{sec_lb}连板龙头")
     elif sec_lb >= 2:
-        score += 6
+        score += 4
         reasons.append(f"板块{sec_lb}连板")
     elif sec_zt >= 3:
-        score += 4
+        score += 3
         reasons.append(f"板块{sec_zt}只涨停")
     elif sec_zt >= 1:
-        score += 2
+        score += 1
 
-    # 10. 连板股本身扣分（高位风险）
+    # 10. 连板自身扣分 (-7分)
     if ind.get("is_lianban", False):
-        score -= 10
-        reasons.append("自身连板高位⚠")
+        score -= 7
+        reasons.append("自身连板⚠")
 
-    # 11. 换手率历史分位（最多8分）
+    # 11. 换手率分位 (6分)
     turnover_rank = ind.get("turnover_rank", None)
     if turnover_rank is not None:
         if turnover_rank >= 80:
-            score += 8
-            reasons.append(f"换手率{turnover_rank:.0f}分位爆发")
+            score += 6
+            reasons.append(f"换手{turnover_rank:.0f}分位")
         elif turnover_rank >= 60:
-            score += 4
+            score += 3
         elif turnover_rank < 30:
-            score -= 4
-            reasons.append(f"换手率{turnover_rank:.0f}分位低迷⚠")
+            score -= 3
+            reasons.append(f"换手低迷⚠")
 
-    return round(score, 1), "，".join(reasons)
+    return round(min(score, 100), 1), "，".join(reasons)
 
 
 def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
