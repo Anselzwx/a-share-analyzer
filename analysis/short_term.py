@@ -209,6 +209,9 @@ def _compute_short_indicators(code: str) -> dict:
         recent_high = high.iloc[-21:-1].max() if len(df) >= 21 else high.max()
         near_new_high = close.iloc[-1] >= recent_high * 0.98
 
+        # 换手率历史分位（近60日成交量分位近似）
+        turnover_rank = float((volume.iloc[-60:] <= volume.iloc[-1]).mean() * 100) if len(volume) >= 60 else 50.0
+
         return {
             "ema8": round(ema8.iloc[-1], 3),
             "ema21": round(ema21.iloc[-1], 3),
@@ -230,6 +233,7 @@ def _compute_short_indicators(code: str) -> dict:
             "gain_5d": round(gain_5d, 2),
             "prev_bullish": prev_bullish,
             "near_new_high": near_new_high,
+            "turnover_rank": round(turnover_rank, 1),
         }
     except Exception:
         return None
@@ -349,7 +353,7 @@ def _score_short(row: pd.Series, ind: dict) -> tuple:
     # 性价比标记（供外部判断）
     value_play = pct < 3 and ind["vol_ratio"] >= 2.0
 
-    # 板块资金流入加分（最多15分）
+    # 板块资金流入（最多15分）
     sector_inflow = ind.get("sector_inflow_pct", None)
     if sector_inflow is not None:
         if sector_inflow <= 30:
@@ -360,6 +364,49 @@ def _score_short(row: pd.Series, ind: dict) -> tuple:
         elif sector_inflow > 80:
             score -= 8
             risks.append("板块净流出⚠")
+
+    # 北向资金（最多8分）
+    north = ind.get("northbound_net", 0.0)
+    if north > 20:
+        score += 8
+        reasons.append(f"北向净买入{north:.0f}亿")
+    elif north > 5:
+        score += 4
+    elif north < -20:
+        score -= 6
+        risks.append(f"北向净卖出{abs(north):.0f}亿⚠")
+
+    # 板块龙头涨停带动（最多10分）
+    sec_zt = ind.get("sector_limit_up_count", 0)
+    sec_lb = ind.get("sector_lianban_max", 0)
+    if sec_lb >= 3:
+        score += 10
+        reasons.append(f"板块{sec_lb}连板龙头")
+    elif sec_lb >= 2:
+        score += 6
+        reasons.append(f"板块{sec_lb}连板")
+    elif sec_zt >= 3:
+        score += 4
+        reasons.append(f"板块{sec_zt}只涨停")
+    elif sec_zt >= 1:
+        score += 2
+
+    # 连板股本身扣分
+    if ind.get("is_lianban", False):
+        score -= 10
+        risks.append("自身连板高位⚠")
+
+    # 换手率历史分位（最多8分）
+    turnover_rank = ind.get("turnover_rank", None)
+    if turnover_rank is not None:
+        if turnover_rank >= 80:
+            score += 8
+            reasons.append(f"换手率{turnover_rank:.0f}分位爆发")
+        elif turnover_rank >= 60:
+            score += 4
+        elif turnover_rank < 30:
+            score -= 4
+            risks.append(f"换手率{turnover_rank:.0f}分位低迷⚠")
 
     return round(score, 1), "，".join(reasons), "，".join(risks) if risks else "无明显风险", value_play
 
@@ -380,24 +427,12 @@ def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:
             return cached
 
     # 大盘过滤：上证或深证跌超1%则空仓
-    from analysis.hot_picks import is_market_ok
+    from analysis.hot_picks import is_market_ok, _build_market_context
     if not is_market_ok(threshold=-1.0):
         return pd.DataFrame()
 
-    # 获取板块资金流入数据
-    sector_inflow_map = {}
-    try:
-        import sys, os
-        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-        from data.fetcher import fetch_sector_flow
-        df_sector = fetch_sector_flow()
-        df_sector["main_net_inflow"] = pd.to_numeric(df_sector["main_net_inflow"], errors="coerce")
-        df_sector = df_sector.sort_values("main_net_inflow", ascending=False).reset_index(drop=True)
-        total = len(df_sector)
-        for i, r in df_sector.iterrows():
-            sector_inflow_map[r["sector"]] = round((i / total) * 100, 1)
-    except Exception:
-        pass
+    # 一次性拉取所有市场上下文
+    ctx = _build_market_context()
 
     df_gainers = _fetch_main_board_gainers()
     if df_gainers.empty:
@@ -411,16 +446,20 @@ def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:
     df_gainers = df_gainers.sort_values("score_rank").head(max_candidates)
 
     def _process(row):
-        ind = _compute_short_indicators(row["code"])
+        code = row["code"]
+        ind = _compute_short_indicators(code)
         if ind is None:
             return None
-        # 注入板块资金流入百分位
         try:
             from ml.train import STOCK_SECTOR_MAP
-            sector = STOCK_SECTOR_MAP.get(row["code"])
-            ind["sector_inflow_pct"] = sector_inflow_map.get(sector) if sector else None
+            sector = STOCK_SECTOR_MAP.get(code)
         except Exception:
-            ind["sector_inflow_pct"] = None
+            sector = None
+        ind["sector_inflow_pct"] = ctx["sector_inflow_map"].get(sector) if sector else None
+        ind["northbound_net"] = ctx["northbound_net"]
+        ind["sector_limit_up_count"] = ctx["sector_limit_up_count"].get(sector, 0) if sector else 0
+        ind["sector_lianban_max"] = ctx["sector_lianban_max"].get(sector, 0) if sector else 0
+        ind["is_lianban"] = code in ctx["lianban_codes"]
         score, reason, risk, value_play = _score_short(row, ind)
         return {
             "name": row["name"],

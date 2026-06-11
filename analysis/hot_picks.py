@@ -21,6 +21,60 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from data.cache import is_stale, load, save, cache_date
 
 
+def _build_market_context() -> dict:
+    """
+    一次性拉取今日所有市场上下文数据，供选股打分使用：
+    - sector_inflow_map: 板块 -> 流入百分位（0=最多流入）
+    - northbound_inflow: 北向净流入（亿元），正=买入
+    - limit_up_sectors: 涨停板所属板块集合
+    - sector_limit_up_count: 板块 -> 今日涨停数
+    - sector_lianban_code: 板块 -> 最高连板数
+    - turnover_rank: code -> 换手率历史分位（需单独计算，此处跳过，在指标层处理）
+    """
+    ctx = {
+        "sector_inflow_map": {},
+        "northbound_net": 0.0,
+        "sector_limit_up_count": {},
+        "sector_lianban_max": {},
+        "lianban_codes": set(),
+    }
+    try:
+        from data.fetcher import fetch_sector_flow
+        df_s = fetch_sector_flow()
+        df_s["main_net_inflow"] = pd.to_numeric(df_s["main_net_inflow"], errors="coerce")
+        df_s = df_s.sort_values("main_net_inflow", ascending=False).reset_index(drop=True)
+        total = len(df_s)
+        for i, r in df_s.iterrows():
+            ctx["sector_inflow_map"][r["sector"]] = round((i / total) * 100, 1)
+    except Exception:
+        pass
+
+    try:
+        from data.fetcher import fetch_northbound_flow
+        df_n = fetch_northbound_flow()
+        north = df_n[df_n["类型"].str.contains("沪港通|深港通", na=False) &
+                     df_n["板块"].str.contains("沪股通|深股通", na=False)]
+        ctx["northbound_net"] = pd.to_numeric(north["资金净流入"], errors="coerce").sum() / 1e8
+    except Exception:
+        pass
+
+    try:
+        from data.fetcher import fetch_limit_up_stocks
+        df_zt = fetch_limit_up_stocks()
+        for _, r in df_zt.iterrows():
+            sec = str(r.get("所属行业", ""))
+            lb = int(r.get("连板数", 1))
+            code = str(r.get("代码", "")).zfill(6)
+            ctx["sector_limit_up_count"][sec] = ctx["sector_limit_up_count"].get(sec, 0) + 1
+            ctx["sector_lianban_max"][sec] = max(ctx["sector_lianban_max"].get(sec, 0), lb)
+            if lb >= 2:
+                ctx["lianban_codes"].add(code)
+    except Exception:
+        pass
+
+    return ctx
+
+
 def _get_index_pct(code: str = "sh000001") -> float:
     """获取上证/深证指数当日涨跌幅，失败返回0。"""
     try:
@@ -225,6 +279,16 @@ def _compute_indicators(code: str) -> dict:
         recent_high = high.iloc[-20:-1].max() if len(df) >= 20 else high.max()
         near_breakout = close.iloc[-1] >= recent_high * 0.97
 
+        # 换手率历史分位（近60日）
+        try:
+            turnover = df["amount"] / (df["close"] * df["volume"]) * 100 if "amount" in df.columns else None
+            if turnover is None:
+                turnover_rank = float((volume.iloc[-60:] <= volume.iloc[-1]).mean() * 100) if len(volume) >= 60 else 50.0
+            else:
+                turnover_rank = float((turnover.iloc[-60:] <= turnover.iloc[-1]).mean() * 100) if len(turnover) >= 60 else 50.0
+        except Exception:
+            turnover_rank = 50.0
+
         return {
             "ma5": ma5, "ma10": ma10, "ma20": ma20,
             "ema8": ema8, "ema21": ema21, "ema50": ema50,
@@ -237,6 +301,7 @@ def _compute_indicators(code: str) -> dict:
             "has_pullback": has_pullback_consolidation,
             "gain_5d": gain_5d,
             "near_breakout": near_breakout,
+            "turnover_rank": turnover_rank,
         }
     except Exception:
         return None
@@ -354,17 +419,60 @@ def _score_zt_potential(row: pd.Series, ind: dict) -> tuple:
     elif ind["gain_5d"] > 20:
         score -= 5
 
-    # 7. 板块资金流入加分（最多15分）
+    # 7. 板块资金流入（最多15分）
     sector_inflow = ind.get("sector_inflow_pct", None)
     if sector_inflow is not None:
-        if sector_inflow >= 30:
+        if sector_inflow <= 30:
             score += 15
             reasons.append(f"板块净流入前{sector_inflow:.0f}%")
-        elif sector_inflow >= 60:
+        elif sector_inflow <= 60:
             score += 8
-        elif sector_inflow < 0:
+        elif sector_inflow > 80:
             score -= 8
             reasons.append("板块净流出⚠")
+
+    # 8. 北向资金（最多8分）
+    north = ind.get("northbound_net", 0.0)
+    if north > 20:
+        score += 8
+        reasons.append(f"北向净买入{north:.0f}亿")
+    elif north > 5:
+        score += 4
+    elif north < -20:
+        score -= 6
+        reasons.append(f"北向净卖出{abs(north):.0f}亿⚠")
+
+    # 9. 板块龙头涨停带动（最多10分）
+    sec_zt = ind.get("sector_limit_up_count", 0)
+    sec_lb = ind.get("sector_lianban_max", 0)
+    if sec_lb >= 3:
+        score += 10
+        reasons.append(f"板块{sec_lb}连板龙头")
+    elif sec_lb >= 2:
+        score += 6
+        reasons.append(f"板块{sec_lb}连板")
+    elif sec_zt >= 3:
+        score += 4
+        reasons.append(f"板块{sec_zt}只涨停")
+    elif sec_zt >= 1:
+        score += 2
+
+    # 10. 连板股本身扣分（高位风险）
+    if ind.get("is_lianban", False):
+        score -= 10
+        reasons.append("自身连板高位⚠")
+
+    # 11. 换手率历史分位（最多8分）
+    turnover_rank = ind.get("turnover_rank", None)
+    if turnover_rank is not None:
+        if turnover_rank >= 80:
+            score += 8
+            reasons.append(f"换手率{turnover_rank:.0f}分位爆发")
+        elif turnover_rank >= 60:
+            score += 4
+        elif turnover_rank < 30:
+            score -= 4
+            reasons.append(f"换手率{turnover_rank:.0f}分位低迷⚠")
 
     return round(score, 1), "，".join(reasons)
 
@@ -389,19 +497,8 @@ def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
     if not is_market_ok(threshold=-1.0):
         return pd.DataFrame()
 
-    # 获取板块资金流入数据，用于打分加权
-    sector_inflow_map = {}
-    try:
-        from data.fetcher import fetch_sector_flow
-        df_sector = fetch_sector_flow()
-        df_sector["main_net_inflow"] = pd.to_numeric(df_sector["main_net_inflow"], errors="coerce")
-        df_sector = df_sector.sort_values("main_net_inflow", ascending=False).reset_index(drop=True)
-        total = len(df_sector)
-        for i, r in df_sector.iterrows():
-            # 排名越靠前百分位越低（流入越多），转成流入百分位（0=最多流入，100=最多流出）
-            sector_inflow_map[r["sector"]] = round((i / total) * 100, 1)
-    except Exception:
-        pass
+    # 一次性拉取所有市场上下文
+    ctx = _build_market_context()
 
     df_hot = fetch_hot_up_list()
 
@@ -414,16 +511,21 @@ def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
     df_hot = df_hot.sort_values("排名较昨日变动", ascending=False).head(max_candidates)
 
     def _process(row):
-        ind = _compute_indicators(row["pure_code"])
+        code = row["pure_code"]
+        ind = _compute_indicators(code)
         if ind is None:
             return None
-        # 注入板块资金流入百分位
+        # 注入市场上下文到ind
         try:
             from ml.train import STOCK_SECTOR_MAP
-            sector = STOCK_SECTOR_MAP.get(row["pure_code"])
-            ind["sector_inflow_pct"] = sector_inflow_map.get(sector) if sector else None
+            sector = STOCK_SECTOR_MAP.get(code)
         except Exception:
-            ind["sector_inflow_pct"] = None
+            sector = None
+        ind["sector_inflow_pct"] = ctx["sector_inflow_map"].get(sector) if sector else None
+        ind["northbound_net"] = ctx["northbound_net"]
+        ind["sector_limit_up_count"] = ctx["sector_limit_up_count"].get(sector, 0) if sector else 0
+        ind["sector_lianban_max"] = ctx["sector_lianban_max"].get(sector, 0) if sector else 0
+        ind["is_lianban"] = code in ctx["lianban_codes"]
         score, reason = _score_zt_potential(row, ind)
         return {
             "name": row["股票名称"],
