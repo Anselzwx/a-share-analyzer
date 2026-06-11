@@ -872,6 +872,24 @@ with tab_watch:
 # Tab 4：热门精选
 # ════════════════════════════════════════════════════════════
 with tab_picks:
+    # ── 14:30 自动触发选股 ────────────────────────────────────
+    _now = datetime.now()
+    _is_auto_window = (_now.weekday() < 5 and
+                       (_now.hour == 14 and _now.minute >= 20) or
+                       (_now.hour == 14 and _now.minute >= 30))
+    if _is_auto_window:
+        try:
+            from analysis.tracker import _load_history as _lh
+            _today_str = _now.strftime("%Y-%m-%d")
+            _existing = _lh()
+            _has_today = not _existing.empty and (_existing["date"] == _today_str).any()
+            if not _has_today:
+                load_hot_picks.clear()
+                load_short_picks.clear()
+                st.toast("14:30 自动选股中...", icon="⏰")
+        except Exception:
+            pass
+
     st.markdown("""
 <style>
 .pick-card {
