@@ -1057,7 +1057,7 @@ with tab_picks:
                 "cap_curve":   get_capital_curve(_src),
             }
         # 合并用于历史明细
-        hist_df  = get_history(30)
+        hist_df  = get_history(200)
         sent_wr  = get_sentiment_winrate()
     except Exception as _e:
         _src_data = {s: {"stats": {}, "curve_df": pd.DataFrame(), "sharpe": 0.0,
