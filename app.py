@@ -1286,16 +1286,39 @@ with tab_picks:
                     unsafe_allow_html=True)
         if not hist_df.empty:
             disp = hist_df[["date", "source", "name", "code",
-                            "price", "position", "score", "result_pct", "pnl", "win"]].copy()
+                            "price", "position", "result_pct", "pnl", "win"]].copy()
+            disp = disp[pd.to_numeric(disp["position"], errors="coerce") > 0].copy()
+
+            # 买入时间：当天14:45
+            disp["买入时间"] = disp["date"].astype(str) + " 14:45"
+            # 卖出价：根据result_pct反推
+            _p = pd.to_numeric(disp["price"], errors="coerce")
+            _r = pd.to_numeric(disp["result_pct"], errors="coerce")
+            disp["卖出价"] = (_p * (1 + _r / 100)).round(2).where(_r.notna(), other=None)
+            # 卖出时间：次日收盘（简化显示）
+            disp["卖出时间"] = disp["date"].apply(
+                lambda d: (pd.to_datetime(d) + pd.Timedelta(days=1)).strftime("%Y-%m-%d") + " 15:00"
+                if pd.notna(d) else "—"
+            )
+
             disp["position"] = pd.to_numeric(disp["position"], errors="coerce").apply(
-                lambda x: f"¥{x:,.0f}" if pd.notna(x) and x > 0 else "—")
-            disp["result_pct"] = disp["result_pct"].apply(
+                lambda x: f"¥{x:,.0f}" if pd.notna(x) else "—")
+            disp["result_pct"] = _r.apply(
                 lambda x: f"{x:+.2f}%" if pd.notna(x) else "待结算")
             disp["pnl"] = pd.to_numeric(disp["pnl"], errors="coerce").apply(
                 lambda x: f"¥{x:+,.0f}" if pd.notna(x) else "—")
             disp["win"] = disp["win"].apply(
-                lambda x: "✅" if x == 1.0 else ("❌" if x == 0.0 else "—"))
-            disp.columns = ["日期", "来源", "名称", "代码", "推荐价", "仓位", "得分", "收益%", "盈亏", "结果"]
+                lambda x: "✅" if x == 1.0 else ("❌" if x == 0.0 else "⏳"))
+            disp["卖出价"] = disp["卖出价"].apply(
+                lambda x: f"¥{x:.2f}" if pd.notna(x) else "待结算")
+
+            disp = disp.rename(columns={
+                "date": "买入日期", "source": "来源", "name": "名称", "code": "代码",
+                "price": "买入价", "position": "仓位", "result_pct": "收益%",
+                "pnl": "盈亏", "win": "结果"
+            })
+            disp = disp[["买入日期", "买入时间", "来源", "名称", "代码",
+                         "买入价", "卖出价", "卖出时间", "仓位", "收益%", "盈亏", "结果"]]
             st.dataframe(disp, use_container_width=True, hide_index=True)
 
         # ── K线复盘（已结算有仓位的记录）────────────────────
