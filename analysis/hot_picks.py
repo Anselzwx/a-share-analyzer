@@ -354,6 +354,18 @@ def _score_zt_potential(row: pd.Series, ind: dict) -> tuple:
     elif ind["gain_5d"] > 20:
         score -= 5
 
+    # 7. 板块资金流入加分（最多15分）
+    sector_inflow = ind.get("sector_inflow_pct", None)
+    if sector_inflow is not None:
+        if sector_inflow >= 30:
+            score += 15
+            reasons.append(f"板块净流入前{sector_inflow:.0f}%")
+        elif sector_inflow >= 60:
+            score += 8
+        elif sector_inflow < 0:
+            score -= 8
+            reasons.append("板块净流出⚠")
+
     return round(score, 1), "，".join(reasons)
 
 
@@ -373,15 +385,29 @@ def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
         if cached is not None and not cached.empty:
             return cached
 
-    # 大盘过滤：上证+深证同时跌超0.8%则空仓
-    if not is_market_ok(threshold=-0.8):
+    # 大盘过滤：上证或深证跌超1%则空仓
+    if not is_market_ok(threshold=-1.0):
         return pd.DataFrame()
+
+    # 获取板块资金流入数据，用于打分加权
+    sector_inflow_map = {}
+    try:
+        from data.fetcher import fetch_sector_flow
+        df_sector = fetch_sector_flow()
+        df_sector["main_net_inflow"] = pd.to_numeric(df_sector["main_net_inflow"], errors="coerce")
+        df_sector = df_sector.sort_values("main_net_inflow", ascending=False).reset_index(drop=True)
+        total = len(df_sector)
+        for i, r in df_sector.iterrows():
+            # 排名越靠前百分位越低（流入越多），转成流入百分位（0=最多流入，100=最多流出）
+            sector_inflow_map[r["sector"]] = round((i / total) * 100, 1)
+    except Exception:
+        pass
 
     df_hot = fetch_hot_up_list()
 
     # 过滤：去掉ST、退市、已涨停（≥9.5%）、跌幅股
     df_hot = df_hot[df_hot["涨跌幅"] > 0]
-    df_hot = df_hot[df_hot["涨跌幅"] < 9.5]   # 核心改动：排除已涨停
+    df_hot = df_hot[df_hot["涨跌幅"] < 9.5]
     df_hot = df_hot[~df_hot["股票名称"].str.contains("ST|退市", na=False)]
 
     # 按热度动量 + 涨幅综合排序，取前 max_candidates 只
@@ -391,6 +417,13 @@ def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
         ind = _compute_indicators(row["pure_code"])
         if ind is None:
             return None
+        # 注入板块资金流入百分位
+        try:
+            from ml.train import STOCK_SECTOR_MAP
+            sector = STOCK_SECTOR_MAP.get(row["pure_code"])
+            ind["sector_inflow_pct"] = sector_inflow_map.get(sector) if sector else None
+        except Exception:
+            ind["sector_inflow_pct"] = None
         score, reason = _score_zt_potential(row, ind)
         return {
             "name": row["股票名称"],

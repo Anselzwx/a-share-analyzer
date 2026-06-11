@@ -349,6 +349,18 @@ def _score_short(row: pd.Series, ind: dict) -> tuple:
     # 性价比标记（供外部判断）
     value_play = pct < 3 and ind["vol_ratio"] >= 2.0
 
+    # 板块资金流入加分（最多15分）
+    sector_inflow = ind.get("sector_inflow_pct", None)
+    if sector_inflow is not None:
+        if sector_inflow <= 30:
+            score += 15
+            reasons.append(f"板块净流入前{sector_inflow:.0f}%")
+        elif sector_inflow <= 60:
+            score += 8
+        elif sector_inflow > 80:
+            score -= 8
+            risks.append("板块净流出⚠")
+
     return round(score, 1), "，".join(reasons), "，".join(risks) if risks else "无明显风险", value_play
 
 
@@ -367,10 +379,25 @@ def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:
         if cached is not None and not cached.empty:
             return cached
 
-    # 大盘过滤：上证+深证同时跌超0.8%则空仓
+    # 大盘过滤：上证或深证跌超1%则空仓
     from analysis.hot_picks import is_market_ok
-    if not is_market_ok(threshold=-0.8):
+    if not is_market_ok(threshold=-1.0):
         return pd.DataFrame()
+
+    # 获取板块资金流入数据
+    sector_inflow_map = {}
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+        from data.fetcher import fetch_sector_flow
+        df_sector = fetch_sector_flow()
+        df_sector["main_net_inflow"] = pd.to_numeric(df_sector["main_net_inflow"], errors="coerce")
+        df_sector = df_sector.sort_values("main_net_inflow", ascending=False).reset_index(drop=True)
+        total = len(df_sector)
+        for i, r in df_sector.iterrows():
+            sector_inflow_map[r["sector"]] = round((i / total) * 100, 1)
+    except Exception:
+        pass
 
     df_gainers = _fetch_main_board_gainers()
     if df_gainers.empty:
@@ -387,6 +414,13 @@ def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:
         ind = _compute_short_indicators(row["code"])
         if ind is None:
             return None
+        # 注入板块资金流入百分位
+        try:
+            from ml.train import STOCK_SECTOR_MAP
+            sector = STOCK_SECTOR_MAP.get(row["code"])
+            ind["sector_inflow_pct"] = sector_inflow_map.get(sector) if sector else None
+        except Exception:
+            ind["sector_inflow_pct"] = None
         score, reason, risk, value_play = _score_short(row, ind)
         return {
             "name": row["name"],
