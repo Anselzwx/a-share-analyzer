@@ -446,6 +446,9 @@ def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:
 
     def _process(row):
         code = row["code"]
+        # 排除科创板(688)和创业板(300)
+        if code.startswith("688") or code.startswith("300"):
+            return None
         ind = _compute_short_indicators(code)
         if ind is None:
             return None
