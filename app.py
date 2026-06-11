@@ -1295,9 +1295,9 @@ with tab_picks:
             _p = pd.to_numeric(disp["price"], errors="coerce")
             _r = pd.to_numeric(disp["result_pct"], errors="coerce")
             disp["卖出价"] = (_p * (1 + _r / 100)).round(2).where(_r.notna(), other=None)
-            # 卖出时间：次日收盘（简化显示）
+            # 卖出时间：次日10:30
             disp["卖出时间"] = disp["date"].apply(
-                lambda d: (pd.to_datetime(d) + pd.Timedelta(days=1)).strftime("%Y-%m-%d") + " 15:00"
+                lambda d: (pd.to_datetime(d) + pd.Timedelta(days=1)).strftime("%Y-%m-%d") + " 10:30"
                 if pd.notna(d) else "—"
             )
 
