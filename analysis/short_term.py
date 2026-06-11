@@ -367,6 +367,11 @@ def pick_short_term_top5(max_candidates: int = 80) -> pd.DataFrame:
         if cached is not None and not cached.empty:
             return cached
 
+    # 大盘过滤：上证+深证同时跌超0.8%则空仓
+    from analysis.hot_picks import is_market_ok
+    if not is_market_ok(threshold=-0.8):
+        return pd.DataFrame()
+
     df_gainers = _fetch_main_board_gainers()
     if df_gainers.empty:
         return pd.DataFrame()

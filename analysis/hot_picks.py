@@ -21,6 +21,31 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from data.cache import is_stale, load, save, cache_date
 
 
+def _get_index_pct(code: str = "sh000001") -> float:
+    """获取上证/深证指数当日涨跌幅，失败返回0。"""
+    try:
+        import requests
+        url = f"http://hq.sinajs.cn/list={code}"
+        r = requests.get(url, headers={"Referer": "https://finance.sina.com.cn",
+                                        "User-Agent": "Mozilla/5.0"}, timeout=5)
+        parts = r.text.split('"')[1].split(',')
+        now_p = float(parts[3])
+        prev_c = float(parts[2])
+        return (now_p / prev_c - 1) * 100
+    except Exception:
+        return 0.0
+
+
+def is_market_ok(threshold: float = -0.8) -> bool:
+    """
+    大盘过滤：上证跌幅超过threshold（默认-0.8%）时返回False，禁止选股。
+    同时检查深证，两者都跌才触发空仓。
+    """
+    sh = _get_index_pct("sh000001")
+    sz = _get_index_pct("sz399001")
+    return not (sh < threshold and sz < threshold)
+
+
 def _fetch_rank_list() -> pd.DataFrame:
     """飙升榜排名列表，优先东财，失败则用东财备用接口。"""
     import requests
@@ -348,6 +373,10 @@ def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
         cached = load(cache_key)
         if cached is not None and not cached.empty:
             return cached
+
+    # 大盘过滤：上证+深证同时跌超0.8%则空仓
+    if not is_market_ok(threshold=-0.8):
+        return pd.DataFrame()
 
     df_hot = fetch_hot_up_list()
 

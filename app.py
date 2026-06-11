@@ -990,7 +990,12 @@ with tab_picks:
             st.error(f"综合精选失败：{e}")
             picks_ok = False
 
-    if picks_ok:
+    if not picks_ok or df_picks.empty:
+        st.markdown(
+            '<div style="background:#1c1c1e;border-left:3px solid #ff453a;border-radius:10px;'
+            'padding:14px 20px;margin-bottom:16px;font-size:14px;font-weight:600;color:#ff453a">'
+            '⚠️ 大盘走弱，今日建议空仓，不做操作</div>', unsafe_allow_html=True)
+    else:
         try:
             save_picks(df_picks, "热门精选", sentiment_level=sentiment.get("sentiment_level"))
         except Exception:
