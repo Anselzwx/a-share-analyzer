@@ -36,14 +36,13 @@ def _get_index_pct(code: str = "sh000001") -> float:
         return 0.0
 
 
-def is_market_ok(threshold: float = -0.8) -> bool:
+def is_market_ok(threshold: float = -1.0) -> bool:
     """
-    大盘过滤：上证跌幅超过threshold（默认-0.8%）时返回False，禁止选股。
-    同时检查深证，两者都跌才触发空仓。
+    大盘过滤：上证或深证任一跌超threshold（默认-1%）时返回False，禁止选股。
     """
     sh = _get_index_pct("sh000001")
     sz = _get_index_pct("sz399001")
-    return not (sh < threshold and sz < threshold)
+    return not (sh < threshold or sz < threshold)
 
 
 def _fetch_rank_list() -> pd.DataFrame:
