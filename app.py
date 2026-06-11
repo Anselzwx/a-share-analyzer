@@ -1291,10 +1291,14 @@ with tab_picks:
 
             # 买入时间：当天14:45
             disp["买入时间"] = disp["date"].astype(str) + " 14:45"
-            # 卖出价：根据result_pct反推
+            # 卖出价：优先用真实sell_price，否则用result_pct反推
             _p = pd.to_numeric(disp["price"], errors="coerce")
             _r = pd.to_numeric(disp["result_pct"], errors="coerce")
-            disp["卖出价"] = (_p * (1 + _r / 100)).round(2).where(_r.notna(), other=None)
+            if "sell_price" in disp.columns:
+                _sp = pd.to_numeric(disp["sell_price"], errors="coerce")
+                disp["卖出价"] = _sp.where(_sp.notna(), (_p * (1 + _r / 100)).round(2))
+            else:
+                disp["卖出价"] = (_p * (1 + _r / 100)).round(2).where(_r.notna())
             # 卖出时间：次日10:30
             disp["卖出时间"] = disp["date"].apply(
                 lambda d: (pd.to_datetime(d) + pd.Timedelta(days=1)).strftime("%Y-%m-%d") + " 10:30"
