@@ -377,7 +377,7 @@ def load_semi_corr():
         'SK海力士': '000660.KS', '三星': '005930.KS',
     }
 
-    def _sina(code, n=120):
+    def _sina(code, n=250):
         prefix = 'sh' if code.startswith('6') else 'sz'
         url = (f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
                f'CN_MarketData.getKLineData?symbol={prefix}{code}&scale=240&ma=no&datalen={n}')
@@ -387,9 +387,10 @@ def load_semi_corr():
         return df.set_index('day')['close'].astype(float)
 
     try:
+        _start_corr = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
         foreign = {}
         for name, sym in foreign_tickers.items():
-            raw = yf.download(sym, start='2025-06-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
+            raw = yf.download(sym, start=_start_corr, end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
             raw.index = pd.to_datetime(raw.index)
             foreign[name] = raw.pct_change().dropna()
 
@@ -419,7 +420,7 @@ def load_backtest_stats():
     import yfinance as yf
     import requests as _req
 
-    def _sina(code, n=120):
+    def _sina(code, n=250):
         prefix = 'sh' if code.startswith('6') else 'sz'
         url = (f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
                f'CN_MarketData.getKLineData?symbol={prefix}{code}&scale=240&ma=no&datalen={n}')
@@ -429,10 +430,11 @@ def load_backtest_stats():
         return df.set_index('day')['close'].astype(float)
 
     try:
+        _start_bt = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
         sl = _sina('600460')
         cd = _sina('600584')
-        sox = yf.download('^SOX', start='2025-06-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
-        mu  = yf.download('MU',   start='2025-06-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
+        sox = yf.download('^SOX', start=_start_bt, end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
+        mu  = yf.download('MU',   start=_start_bt, end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
         sox.index = pd.to_datetime(sox.index)
         mu.index  = pd.to_datetime(mu.index)
         sox_r = sox.pct_change().dropna()
@@ -2479,7 +2481,7 @@ with tab_ml:
 # ════════════════════════════════════════════════════════════
 with tab_semi_signal:
     st.markdown("### 📡 半导体信号面板")
-    st.caption("基于119个交易日回测：SOX+MU同涨→做多胜率60-65%，同跌→空仓胜率仅39%")
+    st.caption("基于241个交易日回测（过去1年）：SOX+MU同涨→做多胜率58%，同跌→空仓胜率42%（负期望）")
 
     # ── 实时信号 ────────────────────────────────────────────
     _us_key = datetime.now().strftime("%Y%m%d%H%M")[:-1]
@@ -2499,19 +2501,19 @@ with tab_semi_signal:
             sig_color = "#30d158"
             sig_bg    = "#0a2a1a"
             sig_desc  = "SOX+MU同涨 — 明日士兰微/长电大概率上涨，可考虑持仓或加仓"
-            sig_hist  = "历史胜率：士兰微 59.6% | 长电科技 64.9%"
+            sig_hist  = "历史胜率：士兰微 58.4% | 长电科技 57.5%（均收益+0.45%/+0.85%）"
         elif sox_pct < 0 and mu_pct < 0:
             sig_label = "空仓"
             sig_color = "#ff453a"
             sig_bg    = "#2a0a0a"
             sig_desc  = "SOX+MU同跌 — 明日士兰微/长电大概率下跌，建议观望不加仓"
-            sig_hist  = "历史胜率：士兰微 38.7% | 长电科技 38.7%（负期望）"
+            sig_hist  = "历史胜率：士兰微 42.4% | 长电科技 40.9%（均收益-0.31%/-0.64%，负期望）"
         else:
             sig_label = "观望"
             sig_color = "#ffd60a"
             sig_bg    = "#2a2000"
             sig_desc  = "SOX与MU方向相反 — 信号不明，建议观望"
-            sig_hist  = "历史胜率：士兰微 45.2% | 长电科技 51.6%"
+            sig_hist  = "历史胜率：士兰微 54.8% | 长电科技 58.1%（均收益+0.29%/+0.69%）"
     else:
         sig_label = "数据获取失败"
         sig_color = "#636366"
