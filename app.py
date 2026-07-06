@@ -466,11 +466,13 @@ with st.spinner("正在获取今日市场数据..."):
         df_north = load_northbound()
         data_ok = True
     except Exception as e:
-        st.error(f"数据获取失败：{e}")
+        st.warning(f"⚠️ 板块资金流向数据暂时无法获取（可能因周末/节假日市场休市），其他功能正常使用。\n\n错误详情：{e}")
         data_ok = False
 
 if not data_ok:
-    st.stop()
+    df_sector = pd.DataFrame()
+    sentiment = {'limit_up': '-', 'limit_down': '-', 'ratio': '-', 'sentiment_level': 3, 'sentiment_label': '数据获取中'}
+    df_north = pd.DataFrame()
 
 df_labeled = classify_flow_strength(df_sector)
 
@@ -498,7 +500,7 @@ tab_today, tab_hist, tab_watch, tab_picks, tab_short, tab_power, tab_semi, tab_o
 # ════════════════════════════════════════════════════════════
 with tab_today:
     st.subheader("板块资金热力图")
-    fig_heat = sector_heatmap(df_labeled.head(top_n), title=f"{sector_type}资金流向热力图")
+    fig_heat = sector_heatmap(df_labeled.sort_values("main_net_inflow", ascending=False).head(top_n), title=f"{sector_type}资金流向热力图")
     st.plotly_chart(fig_heat, use_container_width=True)
 
     col_in, col_out = st.columns(2)
