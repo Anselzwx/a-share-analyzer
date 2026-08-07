@@ -365,20 +365,14 @@ def load_us_signal(_key: str):
 def load_nvda_realtime():
     """NVDA实时价格，10分钟缓存，覆盖盘前盘中盘后"""
     import yfinance as yf
+    from datetime import datetime as _dt, timezone as _tz
     try:
         tk = yf.Ticker('NVDA')
         fi = tk.fast_info
-        last_price = fi.last_price
-        prev_close = fi.previous_close
-        # 用1分钟K线拿最新成交价和时间
-        hist1m = tk.history(period='1d', interval='1m', prepost=True)
-        if hist1m is not None and not hist1m.empty:
-            latest_price = float(hist1m['Close'].iloc[-1])
-            latest_time = hist1m.index[-1]
-        else:
-            latest_price = last_price
-            latest_time = None
+        latest_price = fi.last_price        # 盘前/盘中/盘后/收盘 均为最新价
+        prev_close = fi.previous_close      # 上一交易日收盘价
         pct_vs_prev = (latest_price / prev_close - 1) * 100 if prev_close else 0
+        latest_time = _dt.now(_tz.utc)     # 记录拉取时间
         return {
             'price': latest_price,
             'prev_close': prev_close,
