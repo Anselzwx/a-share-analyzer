@@ -365,24 +365,36 @@ def load_us_signal(_key: str):
 def load_nvda_realtime():
     """NVDA实时价格，10分钟缓存，5m分时线覆盖盘前盘中盘后"""
     import yfinance as yf
+    from datetime import datetime as _dt, timezone as _tz
     try:
         tk = yf.Ticker('NVDA')
-        fi = tk.fast_info
-        prev_close = fi.previous_close  # 上一交易日收盘价
-        # 5分钟线含盘前盘后，能拿到最新实时价
-        hist5m = tk.history(period='1d', interval='5m', prepost=True)
-        if hist5m is not None and not hist5m.empty:
-            latest_price = float(hist5m['Close'].iloc[-1])
-            latest_time = hist5m.index[-1]
+        info = tk.info
+        # 昨日正式收盘价（Yahoo Finance涨跌幅基准）
+        prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose')
+        # 实时价：盘前用preMarketPrice，盘中/盘后用regularMarketPrice
+        pre_price = info.get('preMarketPrice')
+        reg_price = info.get('regularMarketPrice')
+        post_price = info.get('postMarketPrice')
+        market_state = info.get('marketState', '')  # PRE / REGULAR / POST / CLOSED
+        if market_state == 'PRE' and pre_price:
+            latest_price = pre_price
+        elif market_state == 'POST' and post_price:
+            latest_price = post_price
+        elif reg_price:
+            latest_price = reg_price
         else:
-            latest_price = fi.last_price
-            latest_time = None
-        pct_vs_prev = (latest_price / prev_close - 1) * 100 if prev_close else 0
+            # 兜底：5m分时线
+            hist5m = tk.history(period='1d', interval='5m', prepost=True)
+            latest_price = float(hist5m['Close'].iloc[-1]) if not hist5m.empty else None
+        if latest_price is None or prev_close is None:
+            return None
+        pct_vs_prev = (latest_price / prev_close - 1) * 100
         return {
             'price': latest_price,
             'prev_close': prev_close,
             'pct': pct_vs_prev,
-            'latest_time': latest_time,
+            'market_state': market_state,
+            'latest_time': _dt.now(_tz.utc),
         }
     except Exception:
         return None
@@ -2763,12 +2775,14 @@ with tab_semi_signal:
         if nvda_rt:
             _pc = nvda_rt['pct']
             _cc = "#30d158" if _pc >= 0 else "#ff453a"
-            # 市场状态标签
-            if _us_trading:
+            # 市场状态标签（直接用API返回的marketState）
+            _mstate = nvda_rt.get('market_state', '')
+            if _mstate == 'REGULAR':
                 _status_tag = '<span style="font-size:10px;background:#1a3a1a;color:#30d158;border-radius:4px;padding:2px 6px;margin-left:6px">盘中</span>'
-            elif not _us_closed:
-                # 盘前/盘后窗口（美股休市但fast_info有延伸价格）
-                _status_tag = '<span style="font-size:10px;background:#1a2a3a;color:#64d2ff;border-radius:4px;padding:2px 6px;margin-left:6px">盘前/盘后</span>'
+            elif _mstate == 'PRE':
+                _status_tag = '<span style="font-size:10px;background:#1a2a3a;color:#64d2ff;border-radius:4px;padding:2px 6px;margin-left:6px">盘前</span>'
+            elif _mstate == 'POST':
+                _status_tag = '<span style="font-size:10px;background:#2a1a3a;color:#bf5af2;border-radius:4px;padding:2px 6px;margin-left:6px">盘后</span>'
             else:
                 _status_tag = '<span style="font-size:10px;background:#1c1c1e;color:#8e8e93;border-radius:4px;padding:2px 6px;margin-left:6px">已收盘</span>'
             # 时间戳
@@ -2805,12 +2819,15 @@ with tab_semi_signal:
     if nvda_rt:
         _sig_pct = nvda_rt['pct']  # 实时涨跌幅（vs上一收盘）
         # 市场状态文字
-        if _us_trading:
+        _mstate2 = nvda_rt.get('market_state', '')
+        if _mstate2 == 'REGULAR':
             _mkt_state = "盘中实时"
-        elif _us_closed:
-            _mkt_state = "收盘价"
+        elif _mstate2 == 'PRE':
+            _mkt_state = "盘前"
+        elif _mstate2 == 'POST':
+            _mkt_state = "盘后"
         else:
-            _mkt_state = "盘前/盘后"
+            _mkt_state = "收盘价"
         # 时间戳
         _ts_str = ""
         if nvda_rt.get('latest_time') is not None:
