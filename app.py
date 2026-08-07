@@ -2692,14 +2692,14 @@ with tab_semi_signal:
 
     # ── 英伟达 vs 金富科技 ────────────────────────────────────
     st.markdown("---")
-    st.markdown("#### 🟢 英伟达(NVDA) → 金富科技(300128) 信号面板")
+    st.markdown("#### 🟢 英伟达(NVDA) → 金富科技(003018) 信号面板")
     st.caption("前置信号：英伟达前一交易日涨跌 → 金富科技次日表现")
 
     # 实时行情
     nvda_info = us_data.get('NVDA')
     try:
         import requests as _req2
-        _r = _req2.get('http://hq.sinajs.cn/list=sz300128',
+        _r = _req2.get('http://hq.sinajs.cn/list=sz003018',
                        headers={'Referer':'http://finance.sina.com.cn','User-Agent':'Mozilla/5.0'}, timeout=6)
         _r.encoding = 'gbk'
         _vals = _r.text.split('"')[1].split(',')
@@ -2729,7 +2729,7 @@ with tab_semi_signal:
             _cc = "#30d158" if _pc >= 0 else "#ff453a"
             st.markdown(
                 f'<div style="background:#1c1c1e;border-radius:12px;padding:16px 18px">'
-                f'<div style="font-size:13px;font-weight:600;color:#f5f5f7;margin-bottom:6px">金富科技 300128</div>'
+                f'<div style="font-size:13px;font-weight:600;color:#f5f5f7;margin-bottom:6px">金富科技 003018</div>'
                 f'<div style="font-size:26px;font-weight:700;color:#f5f5f7">¥{jf_info["price"]:.2f}</div>'
                 f'<div style="font-size:13px;color:{_cc};font-weight:600">{_pc:+.2f}%</div>'
                 f'</div>', unsafe_allow_html=True)
@@ -2769,7 +2769,7 @@ with tab_semi_signal:
             nvda_r = nvda_raw.pct_change().dropna()
             # 金富科技日线
             url = ('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
-                   'CN_MarketData.getKLineData?symbol=sz300128&scale=240&ma=no&datalen=250')
+                   'CN_MarketData.getKLineData?symbol=sz003018&scale=240&ma=no&datalen=250')
             rr = _rq.get(url, headers={'Referer':'https://finance.sina.com.cn','User-Agent':'Mozilla/5.0'}, timeout=10)
             jf_s = pd.DataFrame(rr.json())
             jf_s['day'] = pd.to_datetime(jf_s['day'])
