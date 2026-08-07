@@ -2697,7 +2697,7 @@ with tab_semi_signal:
 
     # 判断美股是否已收盘（北京时间：周二至周六 05:00 后为已收盘）
     from datetime import timezone, timedelta as _td
-    _bj_now = datetime.now(timezone(timedelta(hours=8)))
+    _bj_now = datetime.now(timezone(_td(hours=8)))
     _bj_weekday = _bj_now.weekday()  # 0=周一 ... 6=周日
     _bj_hour = _bj_now.hour
     # 美股交易日：周二至周六北京时间（对应美东周一至周五）
