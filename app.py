@@ -2695,6 +2695,27 @@ with tab_semi_signal:
     st.markdown("#### 🟢 英伟达(NVDA) → 金富科技(003018) 信号面板")
     st.caption("前置信号：英伟达前一交易日涨跌 → 金富科技次日表现")
 
+    # 判断美股是否已收盘（北京时间：周二至周六 05:00 后为已收盘）
+    from datetime import timezone, timedelta as _td
+    _bj_now = datetime.now(timezone(timedelta(hours=8)))
+    _bj_weekday = _bj_now.weekday()  # 0=周一 ... 6=周日
+    _bj_hour = _bj_now.hour
+    # 美股交易日：周二至周六北京时间（对应美东周一至周五）
+    # 美股收盘时间：夏令时04:00，冬令时05:00（保守用05:00判断）
+    # 美股开盘：夏令时21:30，冬令时22:30
+    # 简化：周一至周五北京时间05:00前为"美股交易中或未开盘"，05:00后为"已收盘"
+    # 周六北京时间05:00前（对应美东周五收盘前）也算未收盘
+    _us_closed = False  # 美股今日是否已收盘
+    _us_trading = False  # 美股当前是否交易中
+    if _bj_weekday == 6:  # 周日北京时间 = 美东周六，美股休市
+        _us_closed = True
+    elif _bj_weekday == 5:  # 周六北京时间
+        _us_closed = _bj_hour >= 5  # 05:00后美股已收盘
+        _us_trading = not _us_closed and _bj_hour >= 0
+    else:  # 周一至周五北京时间
+        _us_closed = _bj_hour >= 5 and _bj_hour < 21  # 05:00-21:30 已收盘
+        _us_trading = (_bj_hour >= 21 and _bj_hour <= 23) or (_bj_hour >= 0 and _bj_hour < 5)
+
     # 实时行情
     nvda_info = us_data.get('NVDA')
     try:
@@ -2715,9 +2736,16 @@ with tab_semi_signal:
         if nvda_info:
             _pc = nvda_info['pct']
             _cc = "#30d158" if _pc >= 0 else "#ff453a"
+            _status_tag = ""
+            if _us_trading:
+                _status_tag = '<span style="font-size:10px;background:#1a3a1a;color:#30d158;border-radius:4px;padding:2px 6px;margin-left:6px">交易中</span>'
+            elif not _us_closed:
+                _status_tag = '<span style="font-size:10px;background:#2a2a0a;color:#ffd60a;border-radius:4px;padding:2px 6px;margin-left:6px">未开盘</span>'
+            else:
+                _status_tag = '<span style="font-size:10px;background:#1c1c1e;color:#8e8e93;border-radius:4px;padding:2px 6px;margin-left:6px">已收盘</span>'
             st.markdown(
                 f'<div style="background:#1c1c1e;border-radius:12px;padding:16px 18px">'
-                f'<div style="font-size:13px;font-weight:600;color:#f5f5f7;margin-bottom:6px">英伟达 NVDA</div>'
+                f'<div style="font-size:13px;font-weight:600;color:#f5f5f7;margin-bottom:6px">英伟达 NVDA{_status_tag}</div>'
                 f'<div style="font-size:26px;font-weight:700;color:#f5f5f7">${nvda_info["price"]:,.2f}</div>'
                 f'<div style="font-size:13px;color:{_cc};font-weight:600">{_pc:+.2f}%</div>'
                 f'</div>', unsafe_allow_html=True)
@@ -2736,25 +2764,49 @@ with tab_semi_signal:
         else:
             st.markdown('<div style="background:#1c1c1e;border-radius:12px;padding:16px;color:#636366">数据获取失败</div>', unsafe_allow_html=True)
 
-    # 信号判断
+    # 信号判断 — 仅在美股已收盘时给出明确信号
     if nvda_info:
         _nvda_pct = nvda_info['pct']
-        if _nvda_pct > 0:
-            _sig, _sig_c, _sig_bg = "做多", "#30d158", "#0a2a1a"
-            _sig_desc = f"英伟达上涨{_nvda_pct:+.2f}% — 金富科技次日看多"
-        elif _nvda_pct < 0:
-            _sig, _sig_c, _sig_bg = "观望", "#ff453a", "#2a0a0a"
-            _sig_desc = f"英伟达下跌{_nvda_pct:+.2f}% — 建议观望"
+        if not _us_closed:
+            # 美股未收盘：显示待定状态
+            if _us_trading:
+                _wait_note = f"美股交易中（NVDA实时 {_nvda_pct:+.2f}%）— 收盘后信号确认"
+                _wait_icon = "⏳"
+            else:
+                _wait_note = "美股今日尚未开盘 — 信号将于收盘后（北京时间约04:00-05:00）更新"
+                _wait_icon = "🕐"
+            st.markdown(
+                f'<div style="background:#1a1a2e;border:1px solid #3a3a5e;border-radius:14px;'
+                f'padding:16px 20px;margin:12px 0">'
+                f'<div style="font-size:11px;color:#636366;margin-bottom:4px">明日操作信号</div>'
+                f'<div style="font-size:28px;font-weight:700;color:#8e8e93;margin-bottom:4px">{_wait_icon} 待定</div>'
+                f'<div style="font-size:13px;color:#8e8e93">{_wait_note}</div>'
+                f'<div style="font-size:11px;color:#636366;margin-top:8px">💡 信号逻辑：美股收盘价确定后，根据NVDA最终涨跌幅给出次日A股操作方向</div>'
+                f'</div>', unsafe_allow_html=True)
         else:
-            _sig, _sig_c, _sig_bg = "中性", "#ffd60a", "#2a2000"
-            _sig_desc = "英伟达平收 — 信号不明"
-        st.markdown(
-            f'<div style="background:{_sig_bg};border:1px solid {_sig_c};border-radius:14px;'
-            f'padding:16px 20px;margin:12px 0">'
-            f'<div style="font-size:11px;color:#636366;margin-bottom:4px">明日操作信号</div>'
-            f'<div style="font-size:28px;font-weight:700;color:{_sig_c};margin-bottom:4px">{_sig}</div>'
-            f'<div style="font-size:13px;color:#f5f5f7">{_sig_desc}</div>'
-            f'</div>', unsafe_allow_html=True)
+            # 美股已收盘：给出确定信号
+            if _nvda_pct > 2:
+                _sig, _sig_c, _sig_bg = "强烈做多", "#30d158", "#0a2a1a"
+                _sig_desc = f"英伟达大涨 {_nvda_pct:+.2f}% — 金富科技次日强烈看多"
+            elif _nvda_pct > 0:
+                _sig, _sig_c, _sig_bg = "做多", "#30d158", "#0a2a1a"
+                _sig_desc = f"英伟达上涨 {_nvda_pct:+.2f}% — 金富科技次日看多"
+            elif _nvda_pct < -2:
+                _sig, _sig_c, _sig_bg = "回避", "#ff453a", "#2a0a0a"
+                _sig_desc = f"英伟达大跌 {_nvda_pct:+.2f}% — 建议回避"
+            elif _nvda_pct < 0:
+                _sig, _sig_c, _sig_bg = "观望", "#ff6b35", "#2a1500"
+                _sig_desc = f"英伟达下跌 {_nvda_pct:+.2f}% — 建议观望"
+            else:
+                _sig, _sig_c, _sig_bg = "中性", "#ffd60a", "#2a2000"
+                _sig_desc = "英伟达平收 — 信号不明"
+            st.markdown(
+                f'<div style="background:{_sig_bg};border:1px solid {_sig_c};border-radius:14px;'
+                f'padding:16px 20px;margin:12px 0">'
+                f'<div style="font-size:11px;color:#636366;margin-bottom:4px">明日操作信号（基于今日美股收盘）</div>'
+                f'<div style="font-size:28px;font-weight:700;color:{_sig_c};margin-bottom:4px">{_sig}</div>'
+                f'<div style="font-size:13px;color:#f5f5f7">{_sig_desc}</div>'
+                f'</div>', unsafe_allow_html=True)
 
     # 历史相关性回测
     @st.cache_data(ttl=3600, show_spinner="计算NVDA→金富科技相关性...")
@@ -2835,6 +2887,38 @@ with tab_semi_signal:
                     f'<div style="font-size:13px;color:#f5f5f7">金富科技次日胜率 <b>{_w_wr:.1f}%</b></div>'
                     f'<div style="font-size:12px;color:#8e8e93">均收益 {_wait["jf"].mean():+.2f}%  最大单日 {_wait["jf"].min():+.2f}%</div>'
                     f'</div>', unsafe_allow_html=True)
+
+            # 情景分析 — NVDA不同涨跌区间对应的历史胜率
+            st.markdown("#### NVDA涨跌区间 → 金富科技次日历史情景")
+            _scenarios = [
+                ("大涨 >+3%",   _bt_df['nvda'] >  3.0,  "#30d158"),
+                ("小涨 +1%~+3%", (_bt_df['nvda'] > 1.0) & (_bt_df['nvda'] <= 3.0), "#5ac87a"),
+                ("微涨 0~+1%",  (_bt_df['nvda'] > 0.0) & (_bt_df['nvda'] <= 1.0), "#a8e6bc"),
+                ("微跌 -1%~0%", (_bt_df['nvda'] >= -1.0) & (_bt_df['nvda'] <= 0.0), "#ffb3a7"),
+                ("小跌 -3%~-1%", (_bt_df['nvda'] >= -3.0) & (_bt_df['nvda'] < -1.0), "#ff6b6b"),
+                ("大跌 <-3%",   _bt_df['nvda'] < -3.0,  "#ff453a"),
+            ]
+            _sc_cols = st.columns(len(_scenarios))
+            for _sci, (_sc_label, _sc_mask, _sc_color) in enumerate(_scenarios):
+                _sc_sub = _bt_df[_sc_mask]
+                _sc_n = len(_sc_sub)
+                if _sc_n > 0:
+                    _sc_wr = (_sc_sub['jf'] > 0).mean() * 100
+                    _sc_avg = _sc_sub['jf'].mean()
+                    _sc_wr_c = "#30d158" if _sc_wr >= 55 else "#ff453a" if _sc_wr < 45 else "#ffd60a"
+                else:
+                    _sc_wr, _sc_avg, _sc_wr_c = 0.0, 0.0, "#636366"
+                with _sc_cols[_sci]:
+                    st.markdown(
+                        f'<div style="background:#1c1c1e;border-radius:10px;padding:12px 10px;text-align:center">'
+                        f'<div style="font-size:11px;color:{_sc_color};font-weight:600;margin-bottom:4px">{_sc_label}</div>'
+                        f'<div style="font-size:11px;color:#636366;margin-bottom:6px">{_sc_n}个交易日</div>'
+                        f'<div style="font-size:18px;font-weight:700;color:{_sc_wr_c}">{_sc_wr:.0f}%</div>'
+                        f'<div style="font-size:10px;color:#636366">次日胜率</div>'
+                        f'<div style="font-size:12px;color:{"#30d158" if _sc_avg>0 else "#ff453a"};margin-top:4px">{_sc_avg:+.2f}%</div>'
+                        f'<div style="font-size:10px;color:#636366">均涨跌幅</div>'
+                        f'</div>', unsafe_allow_html=True)
+            st.caption("💡 胜率>55%绿色，<45%红色；基于过去1年历史数据统计")
 
             # 历史每日涨跌幅对比表
             st.markdown("#### 历史每日涨跌幅对比")
