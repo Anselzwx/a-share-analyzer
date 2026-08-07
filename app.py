@@ -2797,7 +2797,24 @@ with tab_semi_signal:
 
     _corr, _bt_df, _ = _load_nvda_jf_corr()
     if _corr is not None:
-        st.markdown(f"**NVDA → 金富科技相关系数（前置信号，过去1年）：`{_corr:+.3f}`**")
+        # 相关系数解释
+        if _corr >= 0.35:
+            _corr_label, _corr_color, _corr_desc = "强相关", "#30d158", "NVDA走势对金富科技有较强的预测价值，信号可信度高"
+        elif _corr >= 0.20:
+            _corr_label, _corr_color, _corr_desc = "中等相关", "#ffd60a", "NVDA走势对金富科技有一定参考价值，结合其他因素判断"
+        elif _corr >= 0:
+            _corr_label, _corr_color, _corr_desc = "弱相关", "#8e8e93", "NVDA对金富科技影响较弱，信号参考价值有限"
+        else:
+            _corr_label, _corr_color, _corr_desc = "负相关", "#ff453a", "NVDA与金富科技走势相反，需谨慎使用"
+
+        st.markdown(
+            f'<div style="background:#1c1c1e;border-radius:12px;padding:16px 20px;margin:10px 0">'
+            f'<div style="font-size:11px;color:#636366;margin-bottom:4px">前置信号相关系数（过去1年 · 美股前一日→A股次日）</div>'
+            f'<div style="font-size:28px;font-weight:700;color:{_corr_color}">{_corr:+.3f} <span style="font-size:14px">{_corr_label}</span></div>'
+            f'<div style="font-size:12px;color:#8e8e93;margin-top:4px">{_corr_desc}</div>'
+            f'<div style="font-size:11px;color:#636366;margin-top:8px">💡 相关系数含义：+1.0=完全同向，0=无关，-1.0=完全反向。>0.35为有效前置信号</div>'
+            f'</div>', unsafe_allow_html=True)
+
         if _bt_df is not None and not _bt_df.empty:
             _long = _bt_df[_bt_df['signal']=='做多']
             _wait = _bt_df[_bt_df['signal']=='观望']
@@ -2809,14 +2826,39 @@ with tab_semi_signal:
                     f'<div style="background:#1c1c1e;border-radius:12px;padding:14px 16px">'
                     f'<div style="font-size:13px;font-weight:700;color:#30d158;margin-bottom:6px">做多（NVDA涨，{len(_long)}天）</div>'
                     f'<div style="font-size:13px;color:#f5f5f7">金富科技次日胜率 <b>{_l_wr:.1f}%</b></div>'
-                    f'<div style="font-size:12px;color:#8e8e93">均收益 {_long["jf"].mean():+.2f}%</div>'
+                    f'<div style="font-size:12px;color:#8e8e93">均收益 {_long["jf"].mean():+.2f}%  最大单日 {_long["jf"].max():+.2f}%</div>'
                     f'</div>', unsafe_allow_html=True)
             with _c2:
                 st.markdown(
                     f'<div style="background:#1c1c1e;border-radius:12px;padding:14px 16px">'
                     f'<div style="font-size:13px;font-weight:700;color:#ff453a;margin-bottom:6px">观望（NVDA跌，{len(_wait)}天）</div>'
                     f'<div style="font-size:13px;color:#f5f5f7">金富科技次日胜率 <b>{_w_wr:.1f}%</b></div>'
-                    f'<div style="font-size:12px;color:#8e8e93">均收益 {_wait["jf"].mean():+.2f}%</div>'
+                    f'<div style="font-size:12px;color:#8e8e93">均收益 {_wait["jf"].mean():+.2f}%  最大单日 {_wait["jf"].min():+.2f}%</div>'
                     f'</div>', unsafe_allow_html=True)
+
+            # 历史每日涨跌幅对比表
+            st.markdown("#### 历史每日涨跌幅对比")
+            _n_days2 = st.slider("显示最近N个交易日", 10, min(len(_bt_df), 120), 30, 5, key="nvda_jf_days")
+            _recent = _bt_df.tail(_n_days2)[['date','nvda','jf','signal']].copy()
+            _recent.columns = ['日期','NVDA涨跌%','金富科技次日%','信号']
+            _recent['日期'] = _recent['日期'].dt.strftime('%Y-%m-%d')
+
+            def _col_sig(v):
+                if v == '做多': return 'color:#30d158;font-weight:600'
+                return 'color:#ff453a;font-weight:600'
+
+            def _col_pct(v):
+                try:
+                    n = float(str(v).replace('%',''))
+                    return f'color:{"#30d158" if n>0 else "#ff453a" if n<0 else "#636366"}'
+                except: return ''
+
+            for c in ['NVDA涨跌%','金富科技次日%']:
+                _recent[c] = _recent[c].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "-")
+
+            _styled2 = _recent.set_index('日期').style\
+                .map(_col_sig, subset=['信号'])\
+                .map(_col_pct, subset=['NVDA涨跌%','金富科技次日%'])
+            st.dataframe(_styled2, use_container_width=True, height=min(_n_days2*35+50, 600))
     else:
         st.warning("NVDA历史数据获取失败")
