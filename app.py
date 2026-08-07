@@ -131,7 +131,7 @@ st.caption(f"数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}  |
 
 # ── 侧边栏控制 ────────────────────────────────────────────────
 with st.sidebar:
-    st.image("static/logo.png", use_container_width=True)
+    st.image("static/logo.png", width=120)
     st.markdown(
         '<div style="text-align:center;font-size:13px;font-weight:600;'
         'color:#f5f5f7;margin:-8px 0 12px 0;letter-spacing:1px">ANSEL · QUANT LAB</div>',
