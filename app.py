@@ -361,9 +361,9 @@ def load_us_signal(_key: str):
             result[sym] = None
     return result
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def load_nvda_realtime():
-    """NVDA实时价格，60秒缓存，覆盖盘前盘中盘后"""
+    """NVDA实时价格，10分钟缓存，覆盖盘前盘中盘后"""
     import yfinance as yf
     try:
         tk = yf.Ticker('NVDA')
@@ -2802,61 +2802,48 @@ with tab_semi_signal:
         else:
             st.markdown('<div style="background:#1c1c1e;border-radius:12px;padding:16px;color:#636366">数据获取失败</div>', unsafe_allow_html=True)
 
-    # 信号判断 — 始终基于"上一个已确认收盘价"，与实时价格无关
-    # _us_closed=True: 今日已收盘，信号基于今日收盘涨跌
-    # _us_closed=False: 今日未收盘，信号基于上一交易日收盘（即昨日收盘），对应今日A股
+    # 信号判断 — 直接用NVDA实时涨跌幅，10分钟更新一次
     if nvda_rt:
-        # 用历史日线最后一条收盘涨跌作为信号依据（已确认）
-        # _load_nvda_jf_corr()里的nvda_r就是日线收益率，这里单独算
-        try:
-            import yfinance as _yf_sig
-            _sig_hist = _yf_sig.download('NVDA', period='5d', interval='1d', progress=False)['Close'].squeeze()
-            if _us_closed:
-                # 已收盘：用今日收盘（最后一行）
-                _sig_pct = float((_sig_hist.iloc[-1] / _sig_hist.iloc[-2] - 1) * 100)
-                _sig_date = str(_sig_hist.index[-1].date())
-                _sig_label = f"基于 {_sig_date} 收盘价"
-            else:
-                # 未收盘：用前一交易日收盘（倒数第二行）
-                _sig_pct = float((_sig_hist.iloc[-2] / _sig_hist.iloc[-3] - 1) * 100)
-                _sig_date = str(_sig_hist.index[-2].date())
-                _sig_label = f"基于 {_sig_date} 收盘价（今日美股未收盘）"
-        except Exception:
-            _sig_pct = None
-            _sig_label = "数据获取失败"
+        _sig_pct = nvda_rt['pct']  # 实时涨跌幅（vs上一收盘）
+        # 市场状态文字
+        if _us_trading:
+            _mkt_state = "盘中实时"
+        elif _us_closed:
+            _mkt_state = "收盘价"
+        else:
+            _mkt_state = "盘前/盘后"
+        # 时间戳
+        _ts_str = ""
+        if nvda_rt.get('latest_time') is not None:
+            try:
+                _lt = pd.Timestamp(nvda_rt['latest_time']).tz_convert('Asia/Shanghai')
+                _ts_str = f" · 更新于 {_lt.strftime('%H:%M')} 北京时间"
+            except Exception:
+                pass
 
-        if _sig_pct is not None:
-            if _us_trading:
-                # 盘中：额外提示今日信号待定
-                _pending_note = f"⏳ 美股交易中，今日收盘后信号将更新（当前实时 {nvda_rt['pct']:+.2f}%）"
-                st.markdown(
-                    f'<div style="background:#1a1a2e;border:1px dashed #3a3a5e;border-radius:10px;'
-                    f'padding:10px 16px;margin-bottom:8px">'
-                    f'<div style="font-size:12px;color:#8e8e93">{_pending_note}</div>'
-                    f'</div>', unsafe_allow_html=True)
-
-            if _sig_pct > 2:
-                _sig, _sig_c, _sig_bg = "强烈做多", "#30d158", "#0a2a1a"
-                _sig_desc = f"NVDA涨 {_sig_pct:+.2f}% — 金富科技次日强烈看多"
-            elif _sig_pct > 0:
-                _sig, _sig_c, _sig_bg = "做多", "#30d158", "#0a2a1a"
-                _sig_desc = f"NVDA涨 {_sig_pct:+.2f}% — 金富科技次日看多"
-            elif _sig_pct < -2:
-                _sig, _sig_c, _sig_bg = "回避", "#ff453a", "#2a0a0a"
-                _sig_desc = f"NVDA跌 {_sig_pct:+.2f}% — 建议回避"
-            elif _sig_pct < 0:
-                _sig, _sig_c, _sig_bg = "观望", "#ff6b35", "#2a1500"
-                _sig_desc = f"NVDA跌 {_sig_pct:+.2f}% — 建议观望"
-            else:
-                _sig, _sig_c, _sig_bg = "中性", "#ffd60a", "#2a2000"
-                _sig_desc = "NVDA平收 — 信号不明"
-            st.markdown(
-                f'<div style="background:{_sig_bg};border:1px solid {_sig_c};border-radius:14px;'
-                f'padding:16px 20px;margin:12px 0">'
-                f'<div style="font-size:11px;color:#636366;margin-bottom:4px">金富科技操作信号 · {_sig_label}</div>'
-                f'<div style="font-size:28px;font-weight:700;color:{_sig_c};margin-bottom:4px">{_sig}</div>'
-                f'<div style="font-size:13px;color:#f5f5f7">{_sig_desc}</div>'
-                f'</div>', unsafe_allow_html=True)
+        if _sig_pct > 2:
+            _sig, _sig_c, _sig_bg = "强烈做多", "#30d158", "#0a2a1a"
+            _sig_desc = f"NVDA {_mkt_state} {_sig_pct:+.2f}% — 金富科技次日强烈看多"
+        elif _sig_pct > 0:
+            _sig, _sig_c, _sig_bg = "做多", "#30d158", "#0a2a1a"
+            _sig_desc = f"NVDA {_mkt_state} {_sig_pct:+.2f}% — 金富科技次日看多"
+        elif _sig_pct < -2:
+            _sig, _sig_c, _sig_bg = "回避", "#ff453a", "#2a0a0a"
+            _sig_desc = f"NVDA {_mkt_state} {_sig_pct:+.2f}% — 建议回避"
+        elif _sig_pct < 0:
+            _sig, _sig_c, _sig_bg = "观望", "#ff6b35", "#2a1500"
+            _sig_desc = f"NVDA {_mkt_state} {_sig_pct:+.2f}% — 建议观望"
+        else:
+            _sig, _sig_c, _sig_bg = "中性", "#ffd60a", "#2a2000"
+            _sig_desc = f"NVDA {_mkt_state} 平收 — 信号不明"
+        st.markdown(
+            f'<div style="background:{_sig_bg};border:1px solid {_sig_c};border-radius:14px;'
+            f'padding:16px 20px;margin:12px 0">'
+            f'<div style="font-size:11px;color:#636366;margin-bottom:4px">金富科技操作信号 · {_mkt_state}{_ts_str}</div>'
+            f'<div style="font-size:28px;font-weight:700;color:{_sig_c};margin-bottom:4px">{_sig}</div>'
+            f'<div style="font-size:13px;color:#f5f5f7">{_sig_desc}</div>'
+            f'<div style="font-size:11px;color:#636366;margin-top:6px">10分钟自动刷新 · 手动刷新可获取最新价格</div>'
+            f'</div>', unsafe_allow_html=True)
 
     # 历史相关性回测
     @st.cache_data(ttl=3600, show_spinner="计算NVDA→金富科技相关性...")
