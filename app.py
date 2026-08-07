@@ -349,7 +349,7 @@ def load_generic_picks(sector_name: str, top50_hash: int):
 def load_us_signal(_key: str):
     import yfinance as yf
     result = {}
-    for sym in ['^SOX', 'MU', 'TSM', '^IXIC']:
+    for sym in ['^SOX', 'MU', 'TSM', '^IXIC', 'NVDA']:
         try:
             fi = yf.Ticker(sym).fast_info
             result[sym] = {
@@ -2689,3 +2689,134 @@ with tab_semi_signal:
         )
         st.dataframe(styled_corr, use_container_width=True)
         st.caption("🟢 >0.35强相关  🟡 0.15-0.35中等  ⚫ <0.15弱  🔴 负相关")
+
+    # ── 英伟达 vs 金富科技 ────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### 🟢 英伟达(NVDA) → 金富科技(300128) 信号面板")
+    st.caption("前置信号：英伟达前一交易日涨跌 → 金富科技次日表现")
+
+    # 实时行情
+    nvda_info = us_data.get('NVDA')
+    try:
+        import requests as _req2
+        _r = _req2.get('http://hq.sinajs.cn/list=sz300128',
+                       headers={'Referer':'http://finance.sina.com.cn','User-Agent':'Mozilla/5.0'}, timeout=6)
+        _r.encoding = 'gbk'
+        _vals = _r.text.split('"')[1].split(',')
+        jf_price = float(_vals[3])
+        jf_yclose = float(_vals[2])
+        jf_pct = (jf_price / jf_yclose - 1) * 100
+        jf_info = {'price': jf_price, 'pct': jf_pct}
+    except Exception:
+        jf_info = None
+
+    _nvda_col, _jf_col = st.columns(2)
+    with _nvda_col:
+        if nvda_info:
+            _pc = nvda_info['pct']
+            _cc = "#30d158" if _pc >= 0 else "#ff453a"
+            st.markdown(
+                f'<div style="background:#1c1c1e;border-radius:12px;padding:16px 18px">'
+                f'<div style="font-size:13px;font-weight:600;color:#f5f5f7;margin-bottom:6px">英伟达 NVDA</div>'
+                f'<div style="font-size:26px;font-weight:700;color:#f5f5f7">${nvda_info["price"]:,.2f}</div>'
+                f'<div style="font-size:13px;color:{_cc};font-weight:600">{_pc:+.2f}%</div>'
+                f'</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="background:#1c1c1e;border-radius:12px;padding:16px;color:#636366">数据获取失败</div>', unsafe_allow_html=True)
+    with _jf_col:
+        if jf_info:
+            _pc = jf_info['pct']
+            _cc = "#30d158" if _pc >= 0 else "#ff453a"
+            st.markdown(
+                f'<div style="background:#1c1c1e;border-radius:12px;padding:16px 18px">'
+                f'<div style="font-size:13px;font-weight:600;color:#f5f5f7;margin-bottom:6px">金富科技 300128</div>'
+                f'<div style="font-size:26px;font-weight:700;color:#f5f5f7">¥{jf_info["price"]:.2f}</div>'
+                f'<div style="font-size:13px;color:{_cc};font-weight:600">{_pc:+.2f}%</div>'
+                f'</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="background:#1c1c1e;border-radius:12px;padding:16px;color:#636366">数据获取失败</div>', unsafe_allow_html=True)
+
+    # 信号判断
+    if nvda_info:
+        _nvda_pct = nvda_info['pct']
+        if _nvda_pct > 0:
+            _sig, _sig_c, _sig_bg = "做多", "#30d158", "#0a2a1a"
+            _sig_desc = f"英伟达上涨{_nvda_pct:+.2f}% — 金富科技次日看多"
+        elif _nvda_pct < 0:
+            _sig, _sig_c, _sig_bg = "观望", "#ff453a", "#2a0a0a"
+            _sig_desc = f"英伟达下跌{_nvda_pct:+.2f}% — 建议观望"
+        else:
+            _sig, _sig_c, _sig_bg = "中性", "#ffd60a", "#2a2000"
+            _sig_desc = "英伟达平收 — 信号不明"
+        st.markdown(
+            f'<div style="background:{_sig_bg};border:1px solid {_sig_c};border-radius:14px;'
+            f'padding:16px 20px;margin:12px 0">'
+            f'<div style="font-size:11px;color:#636366;margin-bottom:4px">明日操作信号</div>'
+            f'<div style="font-size:28px;font-weight:700;color:{_sig_c};margin-bottom:4px">{_sig}</div>'
+            f'<div style="font-size:13px;color:#f5f5f7">{_sig_desc}</div>'
+            f'</div>', unsafe_allow_html=True)
+
+    # 历史相关性回测
+    @st.cache_data(ttl=3600, show_spinner="计算NVDA→金富科技相关性...")
+    def _load_nvda_jf_corr():
+        import yfinance as _yf
+        import numpy as _np
+        import requests as _rq
+        _start = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
+        try:
+            nvda_raw = _yf.download('NVDA', start=_start, end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
+            nvda_raw.index = pd.to_datetime(nvda_raw.index)
+            nvda_r = nvda_raw.pct_change().dropna()
+            # 金富科技日线
+            url = ('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+                   'CN_MarketData.getKLineData?symbol=sz300128&scale=240&ma=no&datalen=250')
+            rr = _rq.get(url, headers={'Referer':'https://finance.sina.com.cn','User-Agent':'Mozilla/5.0'}, timeout=10)
+            jf_s = pd.DataFrame(rr.json())
+            jf_s['day'] = pd.to_datetime(jf_s['day'])
+            jf_s = jf_s.set_index('day')['close'].astype(float).pct_change().dropna()
+            # 前置相关性
+            pairs = []
+            for dt in jf_s.index:
+                prev = nvda_r.index[nvda_r.index < dt]
+                if len(prev) == 0: continue
+                pairs.append((nvda_r.loc[prev[-1]], jf_s.loc[dt]))
+            if not pairs: return None, None, []
+            xs, ys = zip(*pairs)
+            corr = float(_np.corrcoef(xs, ys)[0, 1])
+            # 回测
+            rows = []
+            for dt in jf_s.index:
+                prev = nvda_r.index[nvda_r.index < dt]
+                if len(prev) == 0: continue
+                n_pct = nvda_r.loc[prev[-1]] * 100
+                sig = '做多' if n_pct > 0 else '观望'
+                rows.append({'date': dt, 'nvda': n_pct, 'jf': jf_s.loc[dt]*100, 'signal': sig})
+            return corr, pd.DataFrame(rows), pairs
+        except Exception:
+            return None, None, []
+
+    _corr, _bt_df, _ = _load_nvda_jf_corr()
+    if _corr is not None:
+        st.markdown(f"**NVDA → 金富科技相关系数（前置信号，过去1年）：`{_corr:+.3f}`**")
+        if _bt_df is not None and not _bt_df.empty:
+            _long = _bt_df[_bt_df['signal']=='做多']
+            _wait = _bt_df[_bt_df['signal']=='观望']
+            _l_wr = (_long['jf']>0).mean()*100 if len(_long) else 0
+            _w_wr = (_wait['jf']>0).mean()*100 if len(_wait) else 0
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                st.markdown(
+                    f'<div style="background:#1c1c1e;border-radius:12px;padding:14px 16px">'
+                    f'<div style="font-size:13px;font-weight:700;color:#30d158;margin-bottom:6px">做多（NVDA涨，{len(_long)}天）</div>'
+                    f'<div style="font-size:13px;color:#f5f5f7">金富科技次日胜率 <b>{_l_wr:.1f}%</b></div>'
+                    f'<div style="font-size:12px;color:#8e8e93">均收益 {_long["jf"].mean():+.2f}%</div>'
+                    f'</div>', unsafe_allow_html=True)
+            with _c2:
+                st.markdown(
+                    f'<div style="background:#1c1c1e;border-radius:12px;padding:14px 16px">'
+                    f'<div style="font-size:13px;font-weight:700;color:#ff453a;margin-bottom:6px">观望（NVDA跌，{len(_wait)}天）</div>'
+                    f'<div style="font-size:13px;color:#f5f5f7">金富科技次日胜率 <b>{_w_wr:.1f}%</b></div>'
+                    f'<div style="font-size:12px;color:#8e8e93">均收益 {_wait["jf"].mean():+.2f}%</div>'
+                    f'</div>', unsafe_allow_html=True)
+    else:
+        st.warning("NVDA历史数据获取失败")
