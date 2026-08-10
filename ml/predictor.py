@@ -10,17 +10,26 @@ import pandas as pd
 import numpy as np
 import akshare as ak
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from ml.features import build_features, FEATURE_COLS
 from ml.train import load_models, STOCK_SECTOR_MAP
 from data.cache import load_sector_flow_history
 
+# 当日内存缓存：key=(code, date_str)，避免同一天重复拉数据
+_fetch_cache: dict = {}
 
 def _fetch_recent(code: str, days: int = 120) -> pd.DataFrame:
+    today = datetime.now().strftime('%Y-%m-%d')
+    cache_key = (code, today)
+    if cache_key in _fetch_cache:
+        return _fetch_cache[cache_key]
     try:
         prefix = "sh" if (code.startswith("6") or code.startswith("5")) else "sz"
         df = ak.stock_zh_a_daily(symbol=f"{prefix}{code}", adjust="qfq")
         df["date"] = pd.to_datetime(df["date"])
-        return df.sort_values("date").tail(days)
+        result = df.sort_values("date").tail(days)
+        _fetch_cache[cache_key] = result
+        return result
     except Exception:
         return pd.DataFrame()
 
