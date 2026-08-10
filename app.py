@@ -2973,12 +2973,41 @@ with tab_semi_signal:
                         f'</div>', unsafe_allow_html=True)
             st.caption("💡 胜率>55%绿色，<45%红色；基于过去1年历史数据统计")
 
+            # 追加"今日"行：用NVDA最新收盘（已确认）预测今天A股，金富科技用实时价
+            try:
+                import yfinance as _yf2
+                _nvda_today = _yf2.download('NVDA', period='5d', interval='1d', progress=False)['Close'].squeeze()
+                _nvda_today.index = pd.to_datetime(_nvda_today.index).tz_localize(None)
+                # 最新一条NVDA收盘涨跌（用于预测今天A股）
+                _nvda_last_pct = float((_nvda_today.iloc[-1] / _nvda_today.iloc[-2] - 1) * 100)
+                _nvda_last_date = _nvda_today.index[-1].date()
+                # 今天A股日期
+                _today = datetime.now().date()
+                # 只在今天还没有数据时追加
+                _existing_dates = pd.to_datetime(_bt_df['date']).dt.date
+                if _today not in _existing_dates.values:
+                    # 金富科技今日实时涨跌
+                    _jf_today_pct = jf_info['pct'] if jf_info else float('nan')
+                    _today_sig = '做多' if _nvda_last_pct > 0 else '观望'
+                    _today_row = pd.DataFrame([{
+                        'date': pd.Timestamp(_today),
+                        'nvda': _nvda_last_pct,
+                        'jf': _jf_today_pct,
+                        'signal': _today_sig,
+                        'today': True,
+                    }])
+                    _bt_df_show = pd.concat([_bt_df.assign(today=False), _today_row], ignore_index=True)
+                else:
+                    _bt_df_show = _bt_df.assign(today=False)
+            except Exception:
+                _bt_df_show = _bt_df.assign(today=False)
+
             # 历史每日涨跌幅对比表
             st.markdown("#### 历史每日涨跌幅对比")
-            _n_days2 = st.slider("显示最近N个交易日", 10, min(len(_bt_df), 120), 30, 5, key="nvda_jf_days")
-            _recent = _bt_df.tail(_n_days2)[['date','nvda','jf','signal']].copy()
-            _recent.columns = ['日期','NVDA涨跌%','金富科技次日%','信号']
-            _recent['日期'] = _recent['日期'].dt.strftime('%Y-%m-%d')
+            _n_days2 = st.slider("显示最近N个交易日", 10, min(len(_bt_df_show), 120), 30, 5, key="nvda_jf_days")
+            _recent = _bt_df_show.tail(_n_days2)[['date','nvda','jf','signal','today']].copy()
+            _recent.columns = ['日期','NVDA涨跌%','金富科技次日%','信号','今日']
+            _recent['日期'] = pd.to_datetime(_recent['日期']).dt.strftime('%Y-%m-%d')
 
             def _col_sig(v):
                 if v == '做多': return 'color:#30d158;font-weight:600'
@@ -2991,8 +3020,9 @@ with tab_semi_signal:
                 except: return ''
 
             for c in ['NVDA涨跌%','金富科技次日%']:
-                _recent[c] = _recent[c].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "-")
+                _recent[c] = _recent[c].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) and not (isinstance(x, float) and x != x) else "进行中")
 
+            _recent = _recent.drop(columns=['今日'])
             _styled2 = _recent.set_index('日期').style\
                 .map(_col_sig, subset=['信号'])\
                 .map(_col_pct, subset=['NVDA涨跌%','金富科技次日%'])
