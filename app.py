@@ -2865,20 +2865,17 @@ with tab_semi_signal:
     st.markdown("#### AI液冷产业链因子评分")
     st.caption("AI_Liquid_Cooling_Factor · 衡量AI服务器/液冷/半导体产业链整体强弱")
 
-    @st.cache_data(ttl=600, show_spinner="计算AI液冷因子...")
+    @st.cache_data(ttl=3600, show_spinner="计算AI液冷因子...")
     def _load_ai_cooling_factor():
         import yfinance as _yf
         import numpy as _np
         try:
-            syms = {'SMCI': 'SMCI', 'VRT': 'VRT', 'NVDA': 'NVDA', 'SOX': '^SOX', 'US10Y': '^TNX'}
-            _data = {}
-            for k, s in syms.items():
-                h = _yf.download(s, period='60d', interval='1d', progress=False)['Close'].squeeze()
-                h.index = pd.to_datetime(h.index).tz_localize(None)
-                _data[k] = h
-
-            # 对齐日期
-            _df = pd.DataFrame(_data).dropna()
+            # 一次并行下载所有标的
+            _raw = _yf.download(['SMCI','VRT','NVDA','^SOX','^TNX'],
+                                period='60d', interval='1d', progress=False)['Close']
+            _raw = _raw.rename(columns={'^SOX':'SOX','^TNX':'US10Y'})
+            _raw.index = pd.to_datetime(_raw.index).tz_localize(None)
+            _df = _raw[['SMCI','VRT','NVDA','SOX','US10Y']].dropna()
 
             # 日收益率
             _ret = _df.pct_change().dropna()
