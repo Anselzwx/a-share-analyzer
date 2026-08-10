@@ -2861,6 +2861,166 @@ with tab_semi_signal:
             f'<div style="font-size:11px;color:#636366;margin-top:6px">10分钟自动刷新 · 手动刷新可获取最新价格</div>'
             f'</div>', unsafe_allow_html=True)
 
+    # ── AI液冷产业链因子评分 ──────────────────────────────────
+    st.markdown("#### AI液冷产业链因子评分")
+    st.caption("AI_Liquid_Cooling_Factor · 衡量AI服务器/液冷/半导体产业链整体强弱")
+
+    @st.cache_data(ttl=600, show_spinner="计算AI液冷因子...")
+    def _load_ai_cooling_factor():
+        import yfinance as _yf
+        import numpy as _np
+        try:
+            syms = {'SMCI': 'SMCI', 'VRT': 'VRT', 'NVDA': 'NVDA', 'SOX': '^SOX', 'US10Y': '^TNX'}
+            _data = {}
+            for k, s in syms.items():
+                h = _yf.download(s, period='60d', interval='1d', progress=False)['Close'].squeeze()
+                h.index = pd.to_datetime(h.index).tz_localize(None)
+                _data[k] = h
+
+            # 对齐日期
+            _df = pd.DataFrame(_data).dropna()
+
+            # 日收益率
+            _ret = _df.pct_change().dropna()
+
+            # 最新一个交易日的收益率
+            _r = _ret.iloc[-1]
+
+            # 基础因子 LCF
+            lcf = (0.4 * _r['SMCI'] + 0.3 * _r['VRT'] +
+                   0.2 * _r['NVDA'] + 0.1 * _r['SOX'])
+
+            # 增强版：Z-score标准化（用过去60日滚动均值/std）
+            _ret_z = (_ret - _ret.mean()) / (_ret.std() + 1e-9)
+            _rz = _ret_z.iloc[-1]
+            ai_cooling = (0.35 * _rz['SMCI'] + 0.25 * _rz['VRT'] +
+                          0.20 * _rz['NVDA'] + 0.10 * _rz['SOX'] +
+                          0.10 * (-_rz['US10Y']))  # 高利率取负
+
+            # 趋势增强因子（各标的）
+            trends = {}
+            for k in ['SMCI', 'VRT', 'NVDA', 'SOX']:
+                ma20 = _df[k].rolling(20).mean().iloc[-1]
+                price = _df[k].iloc[-1]
+                trends[k] = (price - ma20) / (ma20 + 1e-9)
+            trend_avg = _np.mean(list(trends.values()))
+
+            # 金富科技成交量风险因子（用新浪日线）
+            import requests as _rq
+            vol_risk = 0.0
+            try:
+                url = ('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+                       'CN_MarketData.getKLineData?symbol=sz003018&scale=240&ma=no&datalen=30')
+                rr = _rq.get(url, headers={'Referer':'https://finance.sina.com.cn','User-Agent':'Mozilla/5.0'}, timeout=8)
+                jf_df = pd.DataFrame(rr.json())
+                jf_df['close'] = jf_df['close'].astype(float)
+                jf_df['volume'] = jf_df['volume'].astype(float)
+                jf_df['ret'] = jf_df['close'].pct_change()
+                vol_ma20 = jf_df['volume'].rolling(20).mean().iloc[-1]
+                vol_t = jf_df['volume'].iloc[-1]
+                ret_t = jf_df['ret'].iloc[-1]
+                vol_risk = (vol_t / (vol_ma20 + 1e-9)) * (-ret_t)
+            except Exception:
+                pass
+
+            # 最终评分
+            score = lcf + 0.3 * trend_avg - 0.2 * vol_risk
+
+            return {
+                'lcf': lcf,
+                'ai_cooling': ai_cooling,
+                'score': score,
+                'trend_avg': trend_avg,
+                'vol_risk': vol_risk,
+                'r_smci': _r['SMCI'] * 100,
+                'r_vrt': _r['VRT'] * 100,
+                'r_nvda': _r['NVDA'] * 100,
+                'r_sox': _r['SOX'] * 100,
+                'r_us10y': _r['US10Y'] * 100,
+                'rz_smci': _rz['SMCI'],
+                'rz_vrt': _rz['VRT'],
+                'rz_nvda': _rz['NVDA'],
+                'rz_sox': _rz['SOX'],
+                'trends': trends,
+                'date': str(_ret.index[-1].date()),
+            }
+        except Exception as _e:
+            return None
+
+    _acf = _load_ai_cooling_factor()
+    if _acf:
+        _score = _acf['score']
+        _ai_z = _acf['ai_cooling']
+
+        # 评分判断
+        if _score > 0.05:
+            _ac_label, _ac_color, _ac_bg = "产业链强势", "#30d158", "#0a2a1a"
+            _ac_desc = "AI液冷产业链强势，金富科技具备上涨环境"
+        elif _score < -0.05:
+            _ac_label, _ac_color, _ac_bg = "风险提升", "#ff453a", "#2a0a0a"
+            _ac_desc = "AI液冷产业链风险上升，金富科技面临估值压力"
+        else:
+            _ac_label, _ac_color, _ac_bg = "产业链震荡", "#ffd60a", "#2a2000"
+            _ac_desc = "产业链震荡，需结合金富科技自身量价判断"
+
+        # 主评分卡片
+        st.markdown(
+            f'<div style="background:{_ac_bg};border:1px solid {_ac_color};border-radius:14px;'
+            f'padding:16px 20px;margin:10px 0">'
+            f'<div style="font-size:11px;color:#636366;margin-bottom:4px">AI液冷综合评分 · {_acf["date"]}</div>'
+            f'<div style="font-size:32px;font-weight:700;color:{_ac_color};margin-bottom:4px">'
+            f'{_score:+.4f} <span style="font-size:15px">{_ac_label}</span></div>'
+            f'<div style="font-size:13px;color:#f5f5f7">{_ac_desc}</div>'
+            f'<div style="font-size:11px;color:#636366;margin-top:6px">'
+            f'Score = LCF({_acf["lcf"]:+.4f}) + 0.3×Trend({_acf["trend_avg"]:+.4f}) - 0.2×VolRisk({_acf["vol_risk"]:+.4f})'
+            f'</div></div>', unsafe_allow_html=True)
+
+        # 因子分解
+        st.markdown("**因子分解（最新交易日）**")
+        _fc1, _fc2, _fc3, _fc4, _fc5 = st.columns(5)
+        for _col, _name, _val, _weight in [
+            (_fc1, "SMCI", _acf['r_smci'], "×0.40"),
+            (_fc2, "VRT",  _acf['r_vrt'],  "×0.30"),
+            (_fc3, "NVDA", _acf['r_nvda'], "×0.20"),
+            (_fc4, "SOX",  _acf['r_sox'],  "×0.10"),
+            (_fc5, "US10Y",_acf['r_us10y'],"×(-0.10)Z"),
+        ]:
+            _vc = "#30d158" if _val >= 0 else "#ff453a"
+            with _col:
+                st.markdown(
+                    f'<div style="background:#1c1c1e;border-radius:10px;padding:10px;text-align:center">'
+                    f'<div style="font-size:11px;color:#8e8e93;margin-bottom:4px">{_name} {_weight}</div>'
+                    f'<div style="font-size:18px;font-weight:700;color:{_vc}">{_val:+.2f}%</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+        # 趋势因子展开
+        st.markdown("**趋势因子（价格 vs MA20）**")
+        _tr1, _tr2, _tr3, _tr4 = st.columns(4)
+        for _col, _name in [(_tr1,'SMCI'),(_tr2,'VRT'),(_tr3,'NVDA'),(_tr4,'SOX')]:
+            _tv = _acf['trends'][_name] * 100
+            _tc = "#30d158" if _tv >= 0 else "#ff453a"
+            with _col:
+                st.markdown(
+                    f'<div style="background:#1c1c1e;border-radius:10px;padding:10px;text-align:center">'
+                    f'<div style="font-size:11px;color:#8e8e93;margin-bottom:4px">{_name} Trend</div>'
+                    f'<div style="font-size:16px;font-weight:700;color:{_tc}">{_tv:+.2f}%</div>'
+                    f'<div style="font-size:10px;color:#636366">vs MA20</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+        # 增强版Z-score评分
+        st.markdown(
+            f'<div style="background:#1c1c1e;border-radius:10px;padding:12px 16px;margin-top:8px">'
+            f'<div style="font-size:11px;color:#636366;margin-bottom:4px">增强版 AI_Cooling_Factor（Z-score标准化）</div>'
+            f'<div style="font-size:22px;font-weight:700;color:{"#30d158" if _ai_z>0 else "#ff453a"}">{_ai_z:+.4f}</div>'
+            f'<div style="font-size:11px;color:#636366;margin-top:4px">'
+            f'Z(SMCI)={_acf["rz_smci"]:+.2f} · Z(VRT)={_acf["rz_vrt"]:+.2f} · '
+            f'Z(NVDA)={_acf["rz_nvda"]:+.2f} · Z(SOX)={_acf["rz_sox"]:+.2f} · Z(-US10Y)={-_acf["rz_sox"]:+.2f}'
+            f'</div></div>', unsafe_allow_html=True)
+    else:
+        st.warning("AI液冷因子数据获取失败")
+
+    st.markdown("---")
+
     # 历史相关性回测
     @st.cache_data(ttl=3600, show_spinner="计算NVDA→金富科技相关性...")
     def _load_nvda_jf_corr():
