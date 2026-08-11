@@ -36,13 +36,20 @@ def save(key: str, df: pd.DataFrame) -> None:
 
 
 def get_or_fetch(key: str, fetch_fn, max_age_minutes: int = 30) -> pd.DataFrame:
-    """读缓存，过期或不存在则重新拉取并保存。"""
+    """读缓存，过期或不存在则重新拉取并保存。fetch_fn超时10秒返回空。"""
     if not is_stale(key, max_age_minutes):
         cached = load(key)
         if cached is not None:
             return cached
-    df = fetch_fn()
-    save(key, df)
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(fetch_fn)
+        try:
+            df = fut.result(timeout=10)
+        except Exception:
+            df = pd.DataFrame()
+    if not df.empty:
+        save(key, df)
     return df
 
 

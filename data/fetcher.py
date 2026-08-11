@@ -57,9 +57,16 @@ def fetch_northbound_flow() -> pd.DataFrame:
 
 
 def fetch_limit_up_stocks() -> pd.DataFrame:
-    """涨停板股票"""
-    df = ak.stock_zt_pool_em(date=datetime.now().strftime("%Y%m%d"))
-    return df
+    """涨停板股票，非交易时间或超时直接返回空"""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
+    def _fetch():
+        return ak.stock_zt_pool_em(date=datetime.now().strftime("%Y%m%d"))
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(_fetch)
+        try:
+            return fut.result(timeout=6)
+        except Exception:
+            return pd.DataFrame()
 
 
 def fetch_stock_quote(code: str) -> dict:
