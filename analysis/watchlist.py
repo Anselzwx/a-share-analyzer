@@ -24,6 +24,11 @@ WATCHLIST_SHARES = {
     "金富科技": 2500,
 }
 
+# 自定义目标价：名称 -> 目标价（不设则用成本*1.04）
+WATCHLIST_TARGET = {
+    "金富科技": 50.0,
+}
+
 
 def get_stock_hist(code: str, name: str, start: str = "20250101") -> pd.DataFrame:
     key = f"stock_hist_{code}_{cache_date()}"

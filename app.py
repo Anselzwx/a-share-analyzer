@@ -13,7 +13,7 @@ from analysis.sector_flow import (
     compute_cumulative_inflow, rolling_inflow_strength,
 )
 from analysis.market_sentiment import get_sentiment_summary, get_northbound
-from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST, WATCHLIST_COST
+from analysis.watchlist import get_all_watchlist_hist, compute_stock_stats, WATCHLIST, WATCHLIST_COST, WATCHLIST_TARGET
 from analysis.hot_picks import pick_top5, pick_hot_sectors
 from analysis.tracker import (save_picks, fill_results, get_stats, get_history,
                                get_equity_curve, get_max_drawdown, get_sharpe,
@@ -799,7 +799,7 @@ with tab_watch:
         price = row["最新价"].iloc[0]
         today_pct = row["涨跌幅%"].iloc[0] if "涨跌幅%" in row.columns else 0
         stop = cost * 0.97
-        target = cost * 1.04
+        target = WATCHLIST_TARGET.get(name, cost * 1.04)
 
         # 优先用实时价格覆盖
         rt_info = rt_data.get(code, {})
@@ -819,9 +819,9 @@ with tab_watch:
         elif price <= cost * 0.985:
             signal_class = "signal-bear"
             signal_text = f"接近止损 {stop:.2f}"
-        elif pnl >= 4:
+        elif price >= target:
             signal_class = "signal-bull"
-            signal_text = f"达到目标 +4% — 考虑卖出"
+            signal_text = f"达到目标 ¥{target:.2f} — 考虑卖出"
         elif pnl >= 0:
             signal_class = "signal-bull"
             signal_text = "持有中"
@@ -856,9 +856,10 @@ with tab_watch:
     plan_data = {}
     for name in WATCHLIST:
         cost = WATCHLIST_COST.get(name, 0)
+        _target = WATCHLIST_TARGET.get(name, cost * 1.04) if cost > 0 else 0
         plan_data[name] = {
-            "止损价": f"¥{cost*0.97:.2f}",
-            "目标价": f"¥{cost*1.04:.2f}",
+            "止损价": f"¥{cost*0.97:.2f}" if cost > 0 else "—",
+            "目标价": f"¥{_target:.2f}" if _target > 0 else "—",
             "操作": "开盘观察" if cost > 0 else "跟踪",
         }
 
@@ -890,8 +891,9 @@ with tab_watch:
                             annotation_text=f"成本 {cost:.3f}", annotation_position="right")
             fig_k.add_hline(y=cost*0.97, line_dash="dot", line_color="#ff453a", line_width=1,
                             annotation_text=f"止损 {cost*0.97:.2f}", annotation_position="right")
-            fig_k.add_hline(y=cost*1.04, line_dash="dot", line_color="#30d158", line_width=1,
-                            annotation_text=f"目标 {cost*1.04:.2f}", annotation_position="right")
+            _ktarget = WATCHLIST_TARGET.get(selected_stock, cost * 1.04)
+            fig_k.add_hline(y=_ktarget, line_dash="dot", line_color="#30d158", line_width=1,
+                            annotation_text=f"目标 {_ktarget:.2f}", annotation_position="right")
         fig_k.update_layout(
             plot_bgcolor="#000000", paper_bgcolor="#000000",
             font=dict(color="#8e8e93"), margin=dict(t=40, b=40),
