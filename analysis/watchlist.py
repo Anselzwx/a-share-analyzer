@@ -15,10 +15,14 @@ WATCHLIST = {
 }
 
 # 持仓成本价：名称 -> 买入均价
-WATCHLIST_COST = {}
+WATCHLIST_COST = {
+    "金富科技": 36.5,
+}
 
 # 持仓股数：名称 -> 股数
-WATCHLIST_SHARES = {}
+WATCHLIST_SHARES = {
+    "金富科技": 2500,
+}
 
 
 def get_stock_hist(code: str, name: str, start: str = "20250101") -> pd.DataFrame:
