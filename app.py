@@ -2902,20 +2902,17 @@ with tab_semi_signal:
                 trends[k] = (price - ma20) / (ma20 + 1e-9)
             trend_avg = _np.mean(list(trends.values()))
 
-            # 金富科技成交量风险因子（用新浪日线）
-            import requests as _rq
+            # 金富科技成交量风险因子（akshare前复权，避免除权虚假涨跌）
+            import akshare as _ak2
             vol_risk = 0.0
             try:
-                url = ('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
-                       'CN_MarketData.getKLineData?symbol=sz003018&scale=240&ma=no&datalen=30')
-                rr = _rq.get(url, headers={'Referer':'https://finance.sina.com.cn','User-Agent':'Mozilla/5.0'}, timeout=8)
-                jf_df = pd.DataFrame(rr.json())
-                jf_df['close'] = jf_df['close'].astype(float)
-                jf_df['volume'] = jf_df['volume'].astype(float)
-                jf_df['ret'] = jf_df['close'].pct_change()
-                vol_ma20 = jf_df['volume'].rolling(20).mean().iloc[-1]
-                vol_t = jf_df['volume'].iloc[-1]
-                ret_t = jf_df['ret'].iloc[-1]
+                jf_vol = _ak2.stock_zh_a_daily(symbol='sz003018', adjust='qfq')
+                jf_vol['date'] = pd.to_datetime(jf_vol['date'])
+                jf_vol = jf_vol.sort_values('date').tail(30)
+                jf_vol['ret'] = jf_vol['close'].pct_change()
+                vol_ma20 = jf_vol['volume'].rolling(20).mean().iloc[-1]
+                vol_t = jf_vol['volume'].iloc[-1]
+                ret_t = jf_vol['ret'].iloc[-1]
                 vol_risk = (vol_t / (vol_ma20 + 1e-9)) * (-ret_t)
             except Exception:
                 pass
@@ -3029,13 +3026,13 @@ with tab_semi_signal:
             nvda_raw = _yf.download('NVDA', start=_start, end=datetime.now().strftime('%Y-%m-%d'), progress=False)['Close'].squeeze()
             nvda_raw.index = pd.to_datetime(nvda_raw.index)
             nvda_r = nvda_raw.pct_change().dropna()
-            # 金富科技日线
-            url = ('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
-                   'CN_MarketData.getKLineData?symbol=sz003018&scale=240&ma=no&datalen=250')
-            rr = _rq.get(url, headers={'Referer':'https://finance.sina.com.cn','User-Agent':'Mozilla/5.0'}, timeout=10)
-            jf_s = pd.DataFrame(rr.json())
-            jf_s['day'] = pd.to_datetime(jf_s['day'])
-            jf_s = jf_s.set_index('day')['close'].astype(float).pct_change().dropna()
+            # 金富科技日线 — 用akshare前复权，避免除权导致虚假涨跌幅
+            import akshare as _ak
+            jf_raw = _ak.stock_zh_a_daily(symbol='sz003018', adjust='qfq')
+            jf_raw['date'] = pd.to_datetime(jf_raw['date'])
+            jf_raw = jf_raw.sort_values('date').set_index('date')
+            jf_raw = jf_raw[jf_raw.index >= pd.Timestamp(_start)]
+            jf_s = jf_raw['close'].astype(float).pct_change().dropna()
             # 前置相关性
             pairs = []
             for dt in jf_s.index:
