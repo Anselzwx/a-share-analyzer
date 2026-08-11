@@ -4,25 +4,21 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from data.cache import get_or_fetch, cache_date, save, load, is_stale
-from data.fetcher import fetch_stock_hist, fetch_stock_realtime
+from data.fetcher import fetch_stock_hist, fetch_stock_realtime, fetch_hk_stock_realtime, _is_hk
 
-# 自选股列表：名称 -> 代码
+# 自选股列表：名称 -> 代码（A股6位，港股≤5位纯数字）
 WATCHLIST = {
-    "杭电股份": "603618",
-    "士兰微":   "600460",
+    "金富科技":  "003018",
+    "金科股份":  "000656",
+    "MiniMax":   "00100",
+    "阿里巴巴":  "09988",
 }
 
 # 持仓成本价：名称 -> 买入均价
-WATCHLIST_COST = {
-    "杭电股份": 42.767,
-    "士兰微":   33.384,
-}
+WATCHLIST_COST = {}
 
 # 持仓股数：名称 -> 股数
-WATCHLIST_SHARES = {
-    "杭电股份": 300,
-    "士兰微":   500,
-}
+WATCHLIST_SHARES = {}
 
 
 def get_stock_hist(code: str, name: str, start: str = "20250101") -> pd.DataFrame:
@@ -62,19 +58,33 @@ def get_all_watchlist_hist(start: str = "20250101") -> pd.DataFrame:
     if latest_in_hist >= today:
         return hist
 
-    # 历史数据不含今日，用新浪实时接口补一行
+    # 历史数据不含今日，实时接口补一行（A股/港股分开）
+    name_map = {v: k for k, v in WATCHLIST.items()}
+    a_codes = [c for c in WATCHLIST.values() if not _is_hk(c)]
+    hk_codes = [c for c in WATCHLIST.values() if _is_hk(c)]
+    rt_frames = []
     try:
-        rt = fetch_stock_realtime(list(WATCHLIST.values()))
-        if not rt.empty:
-            name_map = {v: k for k, v in WATCHLIST.items()}
-            rt["name"] = rt["code"].map(name_map)
-            rt = rt.dropna(subset=["name"])
-            rt["date"] = pd.to_datetime(rt["date"])
-            keep = ["name", "code", "date", "open", "high", "low", "close", "volume", "pct_change"]
-            rt_clean = rt[[c for c in keep if c in rt.columns]].copy()
-            hist = pd.concat([hist, rt_clean], ignore_index=True)
+        if a_codes:
+            rt_a = fetch_stock_realtime(a_codes)
+            if not rt_a.empty:
+                rt_frames.append(rt_a)
     except Exception:
         pass
+    try:
+        if hk_codes:
+            rt_hk = fetch_hk_stock_realtime(hk_codes)
+            if not rt_hk.empty:
+                rt_frames.append(rt_hk)
+    except Exception:
+        pass
+    if rt_frames:
+        rt = pd.concat(rt_frames, ignore_index=True)
+        rt["name"] = rt["code"].map(name_map)
+        rt = rt.dropna(subset=["name"])
+        rt["date"] = pd.to_datetime(rt["date"])
+        keep = ["name", "code", "date", "open", "high", "low", "close", "volume", "pct_change"]
+        rt_clean = rt[[c for c in keep if c in rt.columns]].copy()
+        hist = pd.concat([hist, rt_clean], ignore_index=True)
 
     return hist
 

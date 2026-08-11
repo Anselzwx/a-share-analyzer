@@ -309,147 +309,159 @@ def _compute_indicators(code: str) -> dict:
 
 def _score_zt_potential(row: pd.Series, ind: dict) -> tuple:
     """
-    涨停潜力评分，归一化到100分，返回 (score, reason_str)。
-    原始满分141分，乘以100/141缩放到100。
+    涨停潜力评分，100分制，返回 (score, reason_str)。
+
+    评分框架（共100分）：
+      板块热度  20分  —— 板块净流入排名 + 板块涨停/连板
+      技术趋势  25分  —— EMA多头排列 + EMA21斜率 + RSI
+      量能      20分  —— 量比（历史日线均量）
+      涨幅位置  15分  —— 当日涨幅区间 + 60日区间位
+      形态      10分  —— 缩量回踩蓄力 + 突破前高
+      北向/换手 10分  —— 北向净流入 + 换手率分位
+    扣分项      无上限 —— 5日过热、EMA反向、RSI过热、连板自身
     """
     score = 0.0
     reasons = []
 
-    # 1. 热度爆发 (14分)
-    rank_rise = row["排名较昨日变动"]
-    heat_score = min(rank_rise / 250, 1.0) * 14
-    score += heat_score
-    if rank_rise >= 2000:
-        reasons.append(f"热度急升{rank_rise}位")
-
-    # 2. 涨幅区间 (14分)
-    pct = row["涨跌幅"]
-    if 5 <= pct <= 8:
-        score += 14
-        reasons.append(f"涨{pct:.1f}%蓄势区")
-    elif 3 <= pct < 5:
-        score += 11
-        reasons.append(f"涨{pct:.1f}%启动中")
-    elif 8 < pct < 9.5:
-        score += 8
-        reasons.append(f"涨{pct:.1f}%逼近涨停")
-    elif 1 <= pct < 3:
-        score += 4
-
-    # 3. 量比爆量 (14分)
-    vr = ind["vol_ratio_hist"]
-    if vr >= 3.0:
-        score += 14
-        reasons.append(f"量比{vr:.1f}x爆量")
-    elif vr >= 2.0:
-        score += 11
-        reasons.append(f"量比{vr:.1f}x放量")
-    elif vr >= 1.5:
-        score += 6
-        reasons.append(f"量比{vr:.1f}x温和")
-    elif vr >= 1.0:
-        score += 3
-    else:
-        reasons.append(f"量比{vr:.1f}x缩量⚠")
-
-    # 4. EMA趋势 + RSI (14分)
-    if ind["full_bull"]:
-        score += 8
-        reasons.append("价格>EMA21>EMA50多头")
-    elif ind["price_above_ema21"]:
-        score += 6
-        reasons.append("价格>EMA21")
-    elif ind["ma5"] > ind["ma20"]:
-        score += 3
-
-    if ind["ema21_slope"] > 1.0:
-        score += 3
-        reasons.append(f"EMA21↑{ind['ema21_slope']:.1f}%")
-    elif ind["ema21_slope"] < -0.5:
-        score -= 2
-        reasons.append("EMA21↓⚠")
-
-    rsi = ind["rsi"]
-    rsi_mom = ind["rsi_momentum"]
-    if 50 <= rsi <= 75 and rsi_mom > 5:
-        score += 6
-        reasons.append(f"RSI={rsi:.0f}↑")
-    elif 45 <= rsi <= 75:
-        score += 3
-        reasons.append(f"RSI={rsi:.0f}")
-    elif rsi > 80:
-        score -= 4
-        reasons.append(f"RSI={rsi:.0f}过热⚠")
-
-    # 5. 形态 (7分)
-    if ind["near_breakout"]:
-        score += 4
-        reasons.append("突破前高")
-    if ind["has_pullback"]:
-        score += 3
-        reasons.append("缩量蓄力")
-
-    # 6. 区间位置 (7分)
-    rp = ind["range_pos"]
-    if rp < 60:
-        score += 7
-        reasons.append(f"低位{rp:.0f}%")
-    elif rp < 80:
-        score += 4
-    else:
-        reasons.append(f"高位{rp:.0f}%⚠")
-
-    # 5日涨幅过大扣分
-    if ind["gain_5d"] > 30:
-        score -= 7
-        reasons.append(f"5日涨{ind['gain_5d']:.0f}%过热")
-    elif ind["gain_5d"] > 20:
-        score -= 4
-
-    # 7. 板块资金流入 (11分)
+    # ── A. 板块热度 (20分) ──────────────────────────────────────
+    # A1. 板块净流入排名 (13分)
     sector_inflow = ind.get("sector_inflow_pct", None)
     if sector_inflow is not None:
-        if sector_inflow <= 30:
-            score += 11
-            reasons.append(f"板块流入前{sector_inflow:.0f}%")
-        elif sector_inflow <= 60:
+        if sector_inflow <= 10:
+            score += 13
+            reasons.append(f"板块流入前10%")
+        elif sector_inflow <= 25:
+            score += 10
+            reasons.append(f"板块流入前25%")
+        elif sector_inflow <= 50:
             score += 6
-        elif sector_inflow > 80:
-            score -= 6
-            reasons.append("板块流出⚠")
+            reasons.append(f"板块流入前50%")
+        elif sector_inflow > 75:
+            score -= 5
+            reasons.append("板块净流出⚠")
 
-    # 8. 北向资金 (6分)
-    north = ind.get("northbound_net", 0.0)
-    if north > 20:
-        score += 6
-        reasons.append(f"北向+{north:.0f}亿")
-    elif north > 5:
-        score += 3
-    elif north < -20:
-        score -= 4
-        reasons.append(f"北向-{abs(north):.0f}亿⚠")
-
-    # 9. 板块龙头涨停 (7分)
+    # A2. 板块涨停/连板热度 (7分)
     sec_zt = ind.get("sector_limit_up_count", 0)
     sec_lb = ind.get("sector_lianban_max", 0)
     if sec_lb >= 3:
         score += 7
         reasons.append(f"板块{sec_lb}连板龙头")
     elif sec_lb >= 2:
-        score += 4
+        score += 5
         reasons.append(f"板块{sec_lb}连板")
     elif sec_zt >= 3:
-        score += 3
+        score += 4
         reasons.append(f"板块{sec_zt}只涨停")
     elif sec_zt >= 1:
-        score += 1
+        score += 2
+        reasons.append(f"板块{sec_zt}只涨停")
 
-    # 10. 连板自身扣分 (-7分)
-    if ind.get("is_lianban", False):
-        score -= 7
-        reasons.append("自身连板⚠")
+    # ── B. 技术趋势 (25分) ──────────────────────────────────────
+    # B1. EMA多头排列 (12分)
+    if ind["full_bull"]:
+        score += 12
+        reasons.append("EMA多头(价>EMA21>EMA50)")
+    elif ind["price_above_ema21"]:
+        score += 8
+        reasons.append("价格>EMA21")
+    elif ind["ma5"] > ind["ma20"]:
+        score += 4
 
-    # 11. 换手率分位 (6分)
+    # B2. EMA21斜率 (5分)
+    slope = ind["ema21_slope"]
+    if slope > 2.0:
+        score += 5
+        reasons.append(f"EMA21↑{slope:.1f}%陡")
+    elif slope > 0.5:
+        score += 3
+        reasons.append(f"EMA21↑{slope:.1f}%")
+    elif slope < -1.0:
+        score -= 4
+        reasons.append("EMA21↓⚠")
+
+    # B3. RSI (8分)
+    rsi = ind["rsi"]
+    rsi_mom = ind["rsi_momentum"]
+    if 55 <= rsi <= 75 and rsi_mom > 5:
+        score += 8
+        reasons.append(f"RSI={rsi:.0f}↑强")
+    elif 50 <= rsi <= 75:
+        score += 5
+        reasons.append(f"RSI={rsi:.0f}")
+    elif 45 <= rsi < 50:
+        score += 2
+    elif rsi > 80:
+        score -= 5
+        reasons.append(f"RSI={rsi:.0f}过热⚠")
+    elif rsi < 35:
+        score -= 3
+        reasons.append(f"RSI={rsi:.0f}弱势⚠")
+
+    # ── C. 量能 (20分) ──────────────────────────────────────────
+    vr = ind["vol_ratio_hist"]
+    if vr >= 3.0:
+        score += 20
+        reasons.append(f"量比{vr:.1f}x爆量")
+    elif vr >= 2.0:
+        score += 15
+        reasons.append(f"量比{vr:.1f}x放量")
+    elif vr >= 1.5:
+        score += 10
+        reasons.append(f"量比{vr:.1f}x活跃")
+    elif vr >= 1.0:
+        score += 5
+        reasons.append(f"量比{vr:.1f}x")
+    else:
+        score -= 5
+        reasons.append(f"量比{vr:.1f}x缩量⚠")
+
+    # ── D. 涨幅+位置 (15分) ─────────────────────────────────────
+    # D1. 当日涨幅区间 (9分)
+    pct = row["涨跌幅"]
+    if 5 <= pct <= 8:
+        score += 9
+        reasons.append(f"涨{pct:.1f}%蓄势区")
+    elif 3 <= pct < 5:
+        score += 7
+        reasons.append(f"涨{pct:.1f}%启动")
+    elif 8 < pct < 9.5:
+        score += 5
+        reasons.append(f"涨{pct:.1f}%逼停")
+    elif 1.5 <= pct < 3:
+        score += 3
+    elif pct >= 9.5:
+        score -= 10  # 已涨停，不应出现在候选池
+
+    # D2. 60日区间位 (6分)
+    rp = ind["range_pos"]
+    if rp < 50:
+        score += 6
+        reasons.append(f"低位{rp:.0f}%")
+    elif rp < 70:
+        score += 3
+    elif rp >= 85:
+        score -= 4
+        reasons.append(f"高位{rp:.0f}%⚠")
+
+    # ── E. 形态 (10分) ──────────────────────────────────────────
+    if ind["has_pullback"]:
+        score += 6
+        reasons.append("缩量蓄力")
+    if ind["near_breakout"]:
+        score += 4
+        reasons.append("突破前高")
+
+    # ── F. 北向+换手 (10分) ─────────────────────────────────────
+    north = ind.get("northbound_net", 0.0)
+    if north > 20:
+        score += 4
+        reasons.append(f"北向+{north:.0f}亿")
+    elif north > 5:
+        score += 2
+    elif north < -20:
+        score -= 3
+        reasons.append(f"北向-{abs(north):.0f}亿⚠")
+
     turnover_rank = ind.get("turnover_rank", None)
     if turnover_rank is not None:
         if turnover_rank >= 80:
@@ -457,20 +469,34 @@ def _score_zt_potential(row: pd.Series, ind: dict) -> tuple:
             reasons.append(f"换手{turnover_rank:.0f}分位")
         elif turnover_rank >= 60:
             score += 3
-        elif turnover_rank < 30:
+        elif turnover_rank < 25:
             score -= 3
             reasons.append(f"换手低迷⚠")
 
-    return round(min(score, 100), 1), "，".join(reasons)
+    # ── 全局扣分 ────────────────────────────────────────────────
+    if ind["gain_5d"] > 30:
+        score -= 8
+        reasons.append(f"5日涨{ind['gain_5d']:.0f}%过热")
+    elif ind["gain_5d"] > 20:
+        score -= 4
+
+    if ind.get("is_lianban", False):
+        score -= 5
+        reasons.append("自身连板⚠")
+
+    return round(min(max(score, 0), 100), 1), "，".join(reasons)
 
 
-def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
+def pick_top5(top_n_sectors: int = 8, stocks_per_sector: int = 15) -> pd.DataFrame:
     """
-    从热门上涨榜中，排除已涨停股，预测今日最可能涨停的3只。
-    每15分钟刷新缓存（盘中需要更实时）。
+    综合精选5只：从当日净流入前N热门板块里选股，综合技术评分取TOP5（跨板块不重复）。
+    候选池来自热门板块而非飙升榜，板块热度信息天然完整。
+    每15分钟刷新缓存。
     """
     from datetime import datetime
-    # 盘中每15分钟刷新
+    from analysis.sector_flow import get_sector_flow
+    from analysis.sector_analysis import fetch_sector_stocks
+
     now = datetime.now()
     time_slot = f"{now.hour}_{now.minute // 15}"
     cache_key = f"hot_picks_{cache_date()}_{time_slot}"
@@ -480,86 +506,115 @@ def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
         if cached is not None and not cached.empty:
             return cached
 
-    # 大盘过滤：上证或深证跌超1%则空仓
     if not is_market_ok(threshold=-1.0):
         return pd.DataFrame()
 
-    # 一次性拉取所有市场上下文
     ctx = _build_market_context()
 
-    df_hot = fetch_hot_up_list()
-
-    # 过滤：去掉ST、退市、已涨停（≥9.5%）、跌幅股
-    df_hot = df_hot[df_hot["涨跌幅"] > 0]
-    df_hot = df_hot[df_hot["涨跌幅"] < 9.5]
-    df_hot = df_hot[~df_hot["股票名称"].str.contains("ST|退市", na=False)]
-
-    # 按热度动量 + 涨幅综合排序，取前 max_candidates 只
-    df_hot = df_hot.sort_values("排名较昨日变动", ascending=False).head(max_candidates)
-
-    def _process(row):
-        code = row["pure_code"]
-        # 排除科创板(688)和创业板(300)
-        if code.startswith("688") or code.startswith("300"):
-            return None
-        ind = _compute_indicators(code)
-        if ind is None:
-            return None
-        # 注入市场上下文到ind
-        try:
-            from ml.train import STOCK_SECTOR_MAP
-            sector = STOCK_SECTOR_MAP.get(code)
-        except Exception:
-            sector = None
-        ind["sector_inflow_pct"] = ctx["sector_inflow_map"].get(sector) if sector else None
-        ind["northbound_net"] = ctx["northbound_net"]
-        ind["sector_limit_up_count"] = ctx["sector_limit_up_count"].get(sector, 0) if sector else 0
-        ind["sector_lianban_max"] = ctx["sector_lianban_max"].get(sector, 0) if sector else 0
-        ind["is_lianban"] = code in ctx["lianban_codes"]
-        score, reason = _score_zt_potential(row, ind)
-        return {
-            "name": row["股票名称"],
-            "code": row["pure_code"],
-            "最新价": row["最新价"],
-            "涨跌幅%": row["涨跌幅"],
-            "热度排名上升": row["排名较昨日变动"],
-            "MA5": round(ind["ma5"], 2),
-            "MA20": round(ind["ma20"], 2),
-            "RSI14": round(ind["rsi"], 1),
-            "RSI动量": round(ind["rsi_momentum"], 1),
-            "60日区间位%": round(ind["range_pos"], 1),
-            "量比": round(ind["vol_ratio_hist"], 2),
-            "5日涨幅%": round(ind["gain_5d"], 1),
-            "涨停潜力分": score,
-            "理由": reason,
+    # 取当日净流入前N板块
+    try:
+        sf = get_sector_flow(use_concept=False)
+        sf["main_net_inflow"] = pd.to_numeric(sf["main_net_inflow"], errors="coerce")
+        sf = sf.sort_values("main_net_inflow", ascending=False).reset_index(drop=True)
+        top_sector_names = sf.head(top_n_sectors)["sector"].tolist()
+        # 构建板块净流入百分位 map：排名/总数*100，越小越好
+        total_sectors = len(sf)
+        sector_inflow_rank = {
+            row["sector"]: round(i / total_sectors * 100, 1)
+            for i, (_, row) in enumerate(sf.iterrows())
         }
+    except Exception:
+        top_sector_names = []
+        sector_inflow_rank = {}
 
-    records = []
-    rows = [row for _, row in df_hot.iterrows()]
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(_process, row) for row in rows]
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                records.append(res)
+    all_records = []
+    seen_codes = set()
 
-    if not records:
+    def _process_sector(sector_name, inflow_rank):
+        cfg = _SECTOR_MAP_FULL.get(sector_name)
+        if not cfg:
+            return []
+        ths_code, stype = cfg
+        try:
+            df = fetch_sector_stocks(ths_code, pages=2, sector_type=stype)
+        except Exception:
+            return []
+        if df.empty:
+            return []
+
+        # 仅主板 + 基础过滤
+        df = df[df["code"].apply(lambda c: c.startswith("60") or c.startswith("00"))]
+        for col in ["涨跌幅(%)", "量比"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df[df["涨跌幅(%)"].between(1.0, 9.4)]
+        df = df[df["量比"] >= 1.0]
+        if df.empty:
+            return []
+
+        records = []
+        def _eval(row):
+            code = row["code"]
+            ind = _compute_indicators(code)
+            if ind is None:
+                return None
+            ind["sector_inflow_pct"] = inflow_rank
+            ind["northbound_net"] = ctx["northbound_net"]
+            ind["sector_limit_up_count"] = ctx["sector_limit_up_count"].get(sector_name, 0)
+            ind["sector_lianban_max"] = ctx["sector_lianban_max"].get(sector_name, 0)
+            ind["is_lianban"] = code in ctx["lianban_codes"]
+            fake_row = pd.Series({"涨跌幅": row["涨跌幅(%)"]})
+            score, reason = _score_zt_potential(fake_row, ind)
+            return {
+                "名称": row["名称"],
+                "代码": code,
+                "板块": sector_name,
+                "最新价": row["现价"],
+                "涨跌幅%": round(float(row["涨跌幅(%)"]), 2),
+                "量比": round(ind["vol_ratio_hist"], 2),
+                "RSI14": round(ind["rsi"], 1),
+                "60日区间位%": round(ind["range_pos"], 1),
+                "涨停潜力分": score,
+                "理由": reason,
+            }
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futs = [ex.submit(_eval, r) for _, r in df.head(stocks_per_sector).iterrows()]
+            for f in as_completed(futs):
+                res = f.result()
+                if res:
+                    records.append(res)
+        return records
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        sector_futures = {
+            executor.submit(_process_sector, sn, sector_inflow_rank.get(sn, 50.0)): sn
+            for sn in top_sector_names
+        }
+        for future in as_completed(sector_futures):
+            for rec in future.result():
+                code = rec["代码"]
+                if code not in seen_codes:
+                    seen_codes.add(code)
+                    all_records.append(rec)
+
+    if not all_records:
         return pd.DataFrame()
 
-    df_all = pd.DataFrame(records).sort_values("涨停潜力分", ascending=False)
+    df_all = (pd.DataFrame(all_records)
+              .sort_values("涨停潜力分", ascending=False)
+              .reset_index(drop=True))
 
-    # 板块分散：同一板块只保留得分最高1只
-    try:
-        from ml.train import STOCK_SECTOR_MAP
-        df_all["_sector"] = df_all["code"].map(STOCK_SECTOR_MAP).fillna(df_all["code"])
-    except Exception:
-        df_all["_sector"] = df_all["code"]
-
+    # 每个板块最多保留1只（避免某板块独占TOP5）
     df_result = (df_all
-                 .drop_duplicates(subset="_sector", keep="first")
+                 .drop_duplicates(subset="板块", keep="first")
                  .head(5)
-                 .drop(columns=["_sector"])
                  .reset_index(drop=True))
+
+    # 补足5只（若去重后不足5，从df_all继续补，允许同板块）
+    if len(df_result) < 5:
+        already = set(df_result["代码"])
+        extras = df_all[~df_all["代码"].isin(already)].head(5 - len(df_result))
+        df_result = pd.concat([df_result, extras], ignore_index=True)
 
     save(cache_key, df_result)
     return df_result
@@ -567,8 +622,8 @@ def pick_top5(max_candidates: int = 30) -> pd.DataFrame:
 
 def pick_hot_sectors(top_n_sectors: int = 5, stocks_per_sector: int = 4) -> list:
     """
-    找今日净流入前N的热门板块，每个板块选出评分最高的3-5只主板股。
-    返回 list of dict: [{"sector": str, "stocks": DataFrame}, ...]
+    找今日净流入前N的热门板块，每个板块选出评分最高的主板股。
+    返回 list of dict: [{"sector": str, "inflow_rank": int, "stocks": DataFrame}, ...]
     """
     from datetime import datetime
     from analysis.sector_flow import get_sector_flow
@@ -581,81 +636,30 @@ def pick_hot_sectors(top_n_sectors: int = 5, stocks_per_sector: int = 4) -> list
     if not is_stale(cache_key, max_age_minutes=15):
         cached = load(cache_key)
         if cached is not None and not cached.empty:
-            # 重建 list of dict
             result = []
             for sector, grp in cached.groupby("_sector", sort=False):
                 result.append({"sector": sector, "stocks": grp.drop(columns=["_sector"]).reset_index(drop=True)})
             return result
 
-    # 今日净流入前N板块（行业板块）
+    # 今日净流入前N板块
     try:
         sf = get_sector_flow(use_concept=False)
         sf["main_net_inflow"] = pd.to_numeric(sf["main_net_inflow"], errors="coerce")
-        top_sectors = sf.nlargest(top_n_sectors, "main_net_inflow")["sector"].tolist()
+        sf = sf.sort_values("main_net_inflow", ascending=False).reset_index(drop=True)
+        total_sectors = len(sf)
+        top_sectors_df = sf.head(top_n_sectors)
+        sector_inflow_rank = {
+            row["sector"]: round(i / total_sectors * 100, 1)
+            for i, (_, row) in enumerate(sf.iterrows())
+        }
+        top_sectors = top_sectors_df["sector"].tolist()
     except Exception:
         return []
 
-    # 板块名称 → 同花顺代码映射（与东财行业板块名称对齐）
-    SECTOR_THS = {
-        # 科技
-        "半导体":       ("881121", "thshy"),
-        "光学光电子":   ("881129", "thshy"),
-        "消费电子":     ("881108", "thshy"),
-        "通信设备":     ("881101", "thshy"),
-        "软件开发":     ("881131", "thshy"),
-        "计算机设备":   ("881130", "thshy"),
-        "电子元件":     ("881122", "thshy"),
-        "元器件":       ("881122", "thshy"),
-        "芯片":         ("881121", "thshy"),
-        # 制造/机械
-        "机械设备":     ("881114", "thshy"),
-        "自动化设备":   ("881115", "thshy"),
-        "工程机械":     ("881116", "thshy"),
-        "电机":         ("881117", "thshy"),
-        "仪器仪表":     ("881118", "thshy"),
-        "轨交设备":     ("881119", "thshy"),
-        # 新能源/能源
-        "电力":         ("881145", "thshy"),
-        "电池":         ("881127", "thshy"),
-        "光伏":         ("881128", "thshy"),
-        "风电":         ("881144", "thshy"),
-        "储能":         ("881127", "thshy"),
-        # 军工
-        "国防军工":     ("881105", "thshy"),
-        "军工装备":     ("881105", "thshy"),
-        "航空航天":     ("881105", "thshy"),
-        # 汽车
-        "汽车零部件":   ("881125", "thshy"),
-        "智能驾驶":     ("881126", "thshy"),
-        "新能源车":     ("881126", "thshy"),
-        # 金融/地产
-        "银行":         ("881180", "thshy"),
-        "证券":         ("881181", "thshy"),
-        "保险":         ("881182", "thshy"),
-        "房地产":       ("881109", "thshy"),
-        # 材料
-        "有色金属":     ("881104", "thshy"),
-        "金属新材料":   ("881107", "thshy"),
-        "钢铁":         ("881106", "thshy"),
-        "化工":         ("881113", "thshy"),
-        "煤炭":         ("881103", "thshy"),
-        # 消费/医疗
-        "医疗器械":     ("881204", "thshy"),
-        "医药":         ("881201", "thshy"),
-        "食品饮料":     ("881301", "thshy"),
-        "食品加工制造": ("881302", "thshy"),
-        "零售":         ("881303", "thshy"),
-        # 物流/交通
-        "港口航运":     ("881401", "thshy"),
-        "物流":         ("881402", "thshy"),
-        "贸易":         ("881403", "thshy"),
-        "综合":         ("881501", "thshy"),
-        "游戏":         ("881132", "thshy"),
-        "传媒":         ("881133", "thshy"),
-    }
+    ctx = _build_market_context()
 
     def _process_sector(sector_name):
-        cfg = SECTOR_THS.get(sector_name)
+        cfg = _SECTOR_MAP_FULL.get(sector_name)
         if not cfg:
             return None
         ths_code, stype = cfg
@@ -666,33 +670,33 @@ def pick_hot_sectors(top_n_sectors: int = 5, stocks_per_sector: int = 4) -> list
         if df.empty:
             return None
 
-        # 仅主板
         df = df[df["code"].apply(lambda c: c.startswith("60") or c.startswith("00"))]
-        # 涨幅1.5-9.4%，量比≥1.2
         for col in ["涨跌幅(%)", "量比"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        df = df[df["涨跌幅(%)"].between(1.5, 9.4)]
-        df = df[df["量比"] >= 1.2]
+        df = df[df["涨跌幅(%)"].between(1.0, 9.4)]
+        df = df[df["量比"] >= 1.0]
         if df.empty:
             return None
 
-        candidates = df.head(20)
+        inflow_rank = sector_inflow_rank.get(sector_name, 50.0)
         records = []
 
         def _eval(row):
             ind = _compute_indicators(row["code"])
             if ind is None:
                 return None
-            fake_row = pd.Series({
-                "排名较昨日变动": 500,
-                "涨跌幅": row["涨跌幅(%)"],
-            })
+            ind["sector_inflow_pct"] = inflow_rank
+            ind["northbound_net"] = ctx["northbound_net"]
+            ind["sector_limit_up_count"] = ctx["sector_limit_up_count"].get(sector_name, 0)
+            ind["sector_lianban_max"] = ctx["sector_lianban_max"].get(sector_name, 0)
+            ind["is_lianban"] = row["code"] in ctx["lianban_codes"]
+            fake_row = pd.Series({"涨跌幅": row["涨跌幅(%)"]})
             score, reason = _score_zt_potential(fake_row, ind)
             return {
                 "name": row["名称"],
                 "code": row["code"],
                 "最新价": row["现价"],
-                "涨跌幅%": row["涨跌幅(%)"],
+                "涨跌幅%": round(float(row["涨跌幅(%)"]), 2),
                 "量比": round(ind["vol_ratio_hist"], 2),
                 "RSI14": round(ind["rsi"], 1),
                 "60日区间位%": round(ind["range_pos"], 1),
@@ -701,7 +705,7 @@ def pick_hot_sectors(top_n_sectors: int = 5, stocks_per_sector: int = 4) -> list
             }
 
         with ThreadPoolExecutor(max_workers=4) as ex:
-            futs = [ex.submit(_eval, r) for _, r in candidates.iterrows()]
+            futs = [ex.submit(_eval, r) for _, r in df.head(20).iterrows()]
             for f in as_completed(futs):
                 res = f.result()
                 if res:
@@ -722,7 +726,6 @@ def pick_hot_sectors(top_n_sectors: int = 5, stocks_per_sector: int = 4) -> list
         if r:
             result.append(r)
 
-    # 缓存：展平存储
     if result:
         frames = []
         for r in result:
@@ -830,11 +833,32 @@ def pick_sector_by_name(sector_name: str, top_n: int = 5) -> pd.DataFrame:
     candidates = df.head(30)
     records = []
 
+    # 获取该板块流入排名
+    try:
+        from analysis.sector_flow import get_sector_flow as _gsf
+        _sf = _gsf(use_concept=False)
+        _sf["main_net_inflow"] = pd.to_numeric(_sf["main_net_inflow"], errors="coerce")
+        _sf = _sf.sort_values("main_net_inflow", ascending=False).reset_index(drop=True)
+        _total = len(_sf)
+        _inflow_rank = next(
+            (round(i / _total * 100, 1) for i, (_, r) in enumerate(_sf.iterrows()) if r["sector"] == matched_key),
+            50.0
+        )
+        _zt_ctx = _build_market_context()
+    except Exception:
+        _inflow_rank = 50.0
+        _zt_ctx = {"northbound_net": 0.0, "sector_limit_up_count": {}, "sector_lianban_max": {}, "lianban_codes": set()}
+
     def _eval(row):
         ind = _compute_indicators(row["code"])
         if ind is None:
             return None
-        fake_row = pd.Series({"排名较昨日变动": 500, "涨跌幅": row["涨跌幅(%)"]})
+        ind["sector_inflow_pct"] = _inflow_rank
+        ind["northbound_net"] = _zt_ctx["northbound_net"]
+        ind["sector_limit_up_count"] = _zt_ctx["sector_limit_up_count"].get(matched_key, 0)
+        ind["sector_lianban_max"] = _zt_ctx["sector_lianban_max"].get(matched_key, 0)
+        ind["is_lianban"] = row["code"] in _zt_ctx["lianban_codes"]
+        fake_row = pd.Series({"涨跌幅": row["涨跌幅(%)"]})
         score, reason = _score_zt_potential(fake_row, ind)
         return {
             "名称": row["名称"],

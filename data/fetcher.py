@@ -148,12 +148,14 @@ def fetch_stock_realtime(codes: list) -> pd.DataFrame:
 
 
 def fetch_stock_hist(code: str, start: str = "20250101") -> pd.DataFrame:
-    """个股日K线（前复权，新浪财经源，国内直连）"""
-    # 新浪接口需要 sh/sz/of 前缀
+    """个股日K线（前复权）。港股代码以'0'开头且长度≤5位走港股接口。"""
+    if _is_hk(code):
+        return fetch_hk_stock_hist(code, start)
+
     if code.startswith("6"):
         symbol = f"sh{code}"
     elif code.startswith("15") or code.startswith("16") or code.startswith("18"):
-        symbol = f"sz{code}"  # ETF
+        symbol = f"sz{code}"
     else:
         symbol = f"sz{code}"
 
@@ -162,9 +164,57 @@ def fetch_stock_hist(code: str, start: str = "20250101") -> pd.DataFrame:
     start_dt = pd.to_datetime(start)
     df = df[df["date"] >= start_dt].copy()
     df["code"] = code
-    # 计算涨跌幅
     df["pct_change"] = df["close"].pct_change() * 100
     return df
+
+
+def _is_hk(code: str) -> bool:
+    """港股代码：纯数字且≤5位（如 00100、09988）。"""
+    return code.isdigit() and len(code) <= 5
+
+
+def fetch_hk_stock_hist(code: str, start: str = "20250101") -> pd.DataFrame:
+    """港股日K线，使用 akshare stock_hk_hist（前复权）。"""
+    symbol = code.lstrip("0") or "0"  # akshare 港股接口用无前导零的代码
+    df = ak.stock_hk_hist(symbol=symbol, period="daily", adjust="qfq")
+    df = df.rename(columns={
+        "日期": "date", "开盘": "open", "最高": "high",
+        "最低": "low", "收盘": "close", "成交量": "volume",
+    })
+    df["date"] = pd.to_datetime(df["date"])
+    start_dt = pd.to_datetime(start)
+    df = df[df["date"] >= start_dt].copy()
+    df["code"] = code
+    df["pct_change"] = df["close"].pct_change() * 100
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df[["date", "open", "high", "low", "close", "volume", "pct_change", "code"]]
+
+
+def fetch_hk_stock_realtime(codes: list) -> pd.DataFrame:
+    """港股实时行情，使用 akshare stock_hk_spot_em。"""
+    try:
+        df_all = ak.stock_hk_spot_em()
+        # 代码列为无前导零的数字字符串，需补齐对比
+        df_all["_code_padded"] = df_all["代码"].str.zfill(5)
+        codes_padded = [c.zfill(5) for c in codes]
+        df_all = df_all[df_all["_code_padded"].isin(codes_padded)].copy()
+        if df_all.empty:
+            return pd.DataFrame()
+        df_all = df_all.rename(columns={
+            "名称": "name", "最新价": "close", "涨跌幅": "pct_change",
+            "开盘价": "open", "最高价": "high", "最低价": "low", "成交量": "volume",
+        })
+        df_all["code"] = df_all["_code_padded"]
+        df_all["date"] = pd.Timestamp.now().normalize()
+        for col in ["open", "high", "low", "close", "volume", "pct_change"]:
+            if col in df_all.columns:
+                df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+        keep = ["code", "date", "open", "high", "low", "close", "volume", "pct_change"]
+        return df_all[[c for c in keep if c in df_all.columns]].reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
 
 
 def fetch_sector_flow_hist(sector_name: str) -> pd.DataFrame:

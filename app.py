@@ -224,7 +224,7 @@ def load_realtime_vol(codes_key: str):
 
 @st.cache_data(ttl=900, show_spinner="综合精选筛选中...")
 def load_hot_picks():
-    return pick_top5(max_candidates=30)
+    return pick_top5(top_n_sectors=8, stocks_per_sector=15)
 
 @st.cache_data(ttl=900, show_spinner="热门板块分析中（约30秒）...")
 def load_sector_picks():
@@ -1038,6 +1038,9 @@ with tab_picks:
             'padding:14px 20px;margin-bottom:16px;font-size:14px;font-weight:600;color:#ff453a">'
             '⚠️ 大盘走弱，今日建议空仓，不做操作</div>', unsafe_allow_html=True)
     else:
+        # 统一列名：新pick_top5输出"名称/代码"，旧版用"name/code"
+        if "名称" in df_picks.columns and "name" not in df_picks.columns:
+            df_picks = df_picks.rename(columns={"名称": "name", "代码": "code"})
         try:
             save_picks(df_picks, "热门精选", sentiment_level=sentiment.get("sentiment_level"))
         except Exception:
