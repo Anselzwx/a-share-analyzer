@@ -3077,6 +3077,197 @@ with tab_semi_signal:
 
     st.markdown("---")
 
+    # ── 液冷板块情绪仪表盘 ──────────────────────────────────────
+    st.markdown("#### 液冷板块情绪")
+    st.caption("全链路情绪评分：美股(30%) → 台股(60%) → A股概念(10%)")
+
+    @st.cache_data(ttl=600, show_spinner="计算液冷板块情绪...")
+    def _load_lc_sentiment():
+        import yfinance as _yf
+        import akshare as _ak
+        result = {}
+
+        # ── 台股分量 60% ─────────────────────────────────────────
+        # AVC(奇鋐 3017.TW) + Auras(双鸿 3323.TWO)
+        try:
+            _tw = _yf.download(['3017.TW', '3323.TWO'],
+                               period='10d', interval='1d',
+                               progress=False)['Close']
+            _tw = _tw.rename(columns={'3017.TW': 'AVC', '3323.TWO': 'Auras'})
+            _tw.index = pd.to_datetime(_tw.index).tz_localize(None)
+            _tw_ret = _tw.pct_change().dropna()
+            _avc_r   = float(_tw_ret['AVC'].iloc[-1])
+            _auras_r = float(_tw_ret['Auras'].iloc[-1])
+            # CoolingSync（台股液冷组合涨跌幅%）
+            _cs = 0.6 * _avc_r * 100 + 0.4 * _auras_r * 100
+            # 归一化到0-100：±5%映射为0-100，中性=50
+            _tw_score = max(0, min(100, 50 + _cs * 5))
+            result['tw_avc_pct']   = round(_avc_r * 100, 2)
+            result['tw_auras_pct'] = round(_auras_r * 100, 2)
+            result['tw_cs']        = round(_cs, 2)
+            result['tw_score']     = round(_tw_score, 1)
+            result['tw_date']      = str(_tw.index[-1].date())
+        except Exception:
+            result['tw_score'] = 50.0
+            result['tw_avc_pct'] = result['tw_auras_pct'] = result['tw_cs'] = None
+
+        # ── 美股分量 30% ─────────────────────────────────────────
+        # NVDA + SMCI + VRT
+        try:
+            _us = _yf.download(['NVDA', 'SMCI', 'VRT'],
+                               period='10d', interval='1d',
+                               progress=False)['Close']
+            _us.index = pd.to_datetime(_us.index).tz_localize(None)
+            _us_ret = _us.pct_change().dropna()
+            _r = _us_ret.iloc[-1]
+            # JCF美股部分等权
+            _us_comp = (float(_r['NVDA']) + float(_r['SMCI']) + float(_r['VRT'])) / 3 * 100
+            _us_score = max(0, min(100, 50 + _us_comp * 5))
+            result['us_nvda_pct']  = round(float(_r['NVDA']) * 100, 2)
+            result['us_smci_pct']  = round(float(_r['SMCI']) * 100, 2)
+            result['us_vrt_pct']   = round(float(_r['VRT'])  * 100, 2)
+            result['us_comp']      = round(_us_comp, 2)
+            result['us_score']     = round(_us_score, 1)
+        except Exception:
+            result['us_score'] = 50.0
+            result['us_nvda_pct'] = result['us_smci_pct'] = result['us_vrt_pct'] = None
+
+        # ── A股概念分量 10% ──────────────────────────────────────
+        # 液冷/散热概念板块主力净流入
+        try:
+            _cf = _ak.stock_fund_flow_concept()
+            _cf = _cf.rename(columns={'行业': 'sector', '净额': 'net'})
+            # 找液冷/散热相关概念
+            _lc = _cf[_cf['sector'].str.contains('液冷|散热|冷却', na=False)]
+            if _lc.empty:
+                # 扩展搜索：AI服务器/液体冷却
+                _lc = _cf[_cf['sector'].str.contains('服务器|AI算', na=False)]
+            if not _lc.empty:
+                _net = pd.to_numeric(_lc['net'].astype(str).str.replace(',', ''), errors='coerce').dropna()
+                if len(_net) > 0:
+                    _net_val = float(_net.iloc[0])  # 亿元
+                    # 归一化：±10亿映射0-100
+                    _a_score = max(0, min(100, 50 + _net_val * 5))
+                    result['a_sector']  = str(_lc['sector'].iloc[0])
+                    result['a_net_bil'] = round(_net_val, 2)
+                    result['a_score']   = round(_a_score, 1)
+                else:
+                    result['a_score'] = 50.0
+            else:
+                result['a_score'] = 50.0
+                result['a_sector'] = '未找到液冷概念'
+        except Exception:
+            result['a_score'] = 50.0
+
+        # ── 综合情绪分 ────────────────────────────────────────────
+        _lc_final = (0.60 * result.get('tw_score', 50) +
+                     0.30 * result.get('us_score', 50) +
+                     0.10 * result.get('a_score', 50))
+        result['lc_score'] = round(_lc_final, 1)
+        return result
+
+    _lcs = _load_lc_sentiment()
+    _lc_score = _lcs.get('lc_score', 50)
+
+    # 颜色与状态
+    if _lc_score >= 65:
+        _lc_color, _lc_label, _lc_bg = '#30d158', '强烈风险偏好', '#1c2e1f'
+    elif _lc_score >= 55:
+        _lc_color, _lc_label, _lc_bg = '#34c759', '偏多', '#1c2e1f'
+    elif _lc_score >= 45:
+        _lc_color, _lc_label, _lc_bg = '#ffd60a', '中性', '#2e2a15'
+    elif _lc_score >= 35:
+        _lc_color, _lc_label, _lc_bg = '#ff9f0a', '偏空', '#2e1e15'
+    else:
+        _lc_color, _lc_label, _lc_bg = '#ff453a', '强烈风险规避', '#2e1515'
+
+    # 进度条宽度
+    _bar_w = int(_lc_score)
+
+    # 主仪表卡片
+    st.markdown(
+        f'<div style="background:{_lc_bg};border:1px solid {_lc_color}40;border-radius:16px;padding:20px 24px;margin:8px 0">'
+        f'<div style="font-size:12px;color:#636366;margin-bottom:8px">液冷板块情绪指数 · 美股30% + 台股60% + A股概念10%</div>'
+        f'<div style="display:flex;align-items:center;gap:16px;margin-bottom:12px">'
+        f'<div style="font-size:52px;font-weight:700;color:{_lc_color};line-height:1">{_lc_score}</div>'
+        f'<div><div style="font-size:20px;font-weight:600;color:{_lc_color}">{_lc_label}</div>'
+        f'<div style="font-size:12px;color:#8e8e93;margin-top:4px">0=极度悲观 · 50=中性 · 100=极度乐观</div></div>'
+        f'</div>'
+        f'<div style="background:#1c1c1e;border-radius:6px;height:8px;margin-bottom:16px">'
+        f'<div style="background:{_lc_color};border-radius:6px;height:8px;width:{_bar_w}%;transition:width 0.5s"></div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+    # 三分量明细
+    _c1, _c2, _c3 = st.columns(3)
+    with _c1:
+        _tw_s = _lcs.get('tw_score', 50)
+        _tw_c = '#30d158' if _tw_s >= 55 else ('#ff453a' if _tw_s <= 45 else '#ffd60a')
+        _avc_t  = f"{_lcs['tw_avc_pct']:+.2f}%" if _lcs.get('tw_avc_pct') is not None else 'N/A'
+        _aur_t  = f"{_lcs['tw_auras_pct']:+.2f}%" if _lcs.get('tw_auras_pct') is not None else 'N/A'
+        _cs_t   = f"CoolingSync {_lcs['tw_cs']:+.2f}%" if _lcs.get('tw_cs') is not None else ''
+        st.markdown(
+            f'<div style="background:#1c1c1e;border-radius:12px;padding:14px 16px;border:1px solid {_tw_c}30">'
+            f'<div style="font-size:11px;color:#636366;margin-bottom:6px">台股 · 权重60%</div>'
+            f'<div style="font-size:26px;font-weight:700;color:{_tw_c};margin-bottom:4px">{_tw_s}</div>'
+            f'<div style="font-size:12px;color:#8e8e93">奇鋐 {_avc_t}</div>'
+            f'<div style="font-size:12px;color:#8e8e93">双鸿 {_aur_t}</div>'
+            f'<div style="font-size:11px;color:#636366;margin-top:4px">{_cs_t}</div>'
+            f'</div>', unsafe_allow_html=True
+        )
+    with _c2:
+        _us_s = _lcs.get('us_score', 50)
+        _us_c = '#30d158' if _us_s >= 55 else ('#ff453a' if _us_s <= 45 else '#ffd60a')
+        _nv_t  = f"NVDA {_lcs['us_nvda_pct']:+.2f}%" if _lcs.get('us_nvda_pct') is not None else 'N/A'
+        _sm_t  = f"SMCI {_lcs['us_smci_pct']:+.2f}%" if _lcs.get('us_smci_pct') is not None else 'N/A'
+        _vr_t  = f"VRT  {_lcs['us_vrt_pct']:+.2f}%" if _lcs.get('us_vrt_pct') is not None else 'N/A'
+        st.markdown(
+            f'<div style="background:#1c1c1e;border-radius:12px;padding:14px 16px;border:1px solid {_us_c}30">'
+            f'<div style="font-size:11px;color:#636366;margin-bottom:6px">美股 · 权重30%</div>'
+            f'<div style="font-size:26px;font-weight:700;color:{_us_c};margin-bottom:4px">{_us_s}</div>'
+            f'<div style="font-size:12px;color:#8e8e93">{_nv_t}</div>'
+            f'<div style="font-size:12px;color:#8e8e93">{_sm_t}</div>'
+            f'<div style="font-size:12px;color:#8e8e93">{_vr_t}</div>'
+            f'</div>', unsafe_allow_html=True
+        )
+    with _c3:
+        _a_s = _lcs.get('a_score', 50)
+        _a_c = '#30d158' if _a_s >= 55 else ('#ff453a' if _a_s <= 45 else '#ffd60a')
+        _a_sec = _lcs.get('a_sector', '液冷概念')
+        _a_net = f"净流入 {_lcs['a_net_bil']:+.1f}亿" if _lcs.get('a_net_bil') is not None else '数据获取中'
+        st.markdown(
+            f'<div style="background:#1c1c1e;border-radius:12px;padding:14px 16px;border:1px solid {_a_c}30">'
+            f'<div style="font-size:11px;color:#636366;margin-bottom:6px">A股概念 · 权重10%</div>'
+            f'<div style="font-size:26px;font-weight:700;color:{_a_c};margin-bottom:4px">{_a_s}</div>'
+            f'<div style="font-size:12px;color:#8e8e93">{_a_sec}</div>'
+            f'<div style="font-size:12px;color:#8e8e93">{_a_net}</div>'
+            f'</div>', unsafe_allow_html=True
+        )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # 操作建议
+    if _lc_score >= 65:
+        _lc_advice = "液冷产业链全线强势，金富科技及同类标的适合积极做多"
+    elif _lc_score >= 55:
+        _lc_advice = "液冷情绪偏多，可持有或小仓位加仓，注意大盘配合度"
+    elif _lc_score >= 45:
+        _lc_advice = "情绪中性，观望为主，等待方向选择"
+    elif _lc_score >= 35:
+        _lc_advice = "液冷情绪偏弱，建议轻仓或减仓，控制回撤"
+    else:
+        _lc_advice = "液冷全链路悲观，建议规避液冷相关标的，等待信号反转"
+
+    st.markdown(
+        f'<div style="background:#1c1c1e;border-radius:10px;padding:12px 16px;margin-top:8px">'
+        f'<span style="color:#636366;font-size:12px">操作建议：</span>'
+        f'<span style="color:{_lc_color};font-size:13px;font-weight:600"> {_lc_advice}</span>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown("---")
+
     # 历史相关性回测
     @st.cache_data(ttl=3600, show_spinner="计算NVDA→金富科技相关性...")
     def _load_nvda_jf_corr():
