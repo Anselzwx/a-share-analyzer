@@ -7,6 +7,7 @@ import io
 import os
 import pickle
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import requests
@@ -492,10 +493,130 @@ def stock_page():
             stock_detail(c, names.get(c, c))
 
 
+# ── 验证报告页 ──────────────────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_validation(_mtime: float):
+    with open(os.path.join(os.path.dirname(__file__), "data", "validation.pkl"), "rb") as f:
+        return pickle.load(f)
+
+
+def _fmt(x, f="{:.2f}"):
+    return "—" if x is None or (isinstance(x, float) and np.isnan(x)) else f.format(x)
+
+
+def _scatter(g: pd.DataFrame, bh_oos: float, passed: bool, title: str, key: str):
+    fig = go.Figure()
+    fams = list(dict.fromkeys(g["类别"]))
+    pal = [C2000, C50, "#c084fc", "#f97316", "#94a3b8", "#22d3ee", "#f472b6", "#a3e635"]
+    for i, fm in enumerate(fams):
+        x = g[g["类别"] == fm]
+        fig.add_trace(go.Scatter(x=x["样本内夏普"], y=x["样本外夏普"], mode="markers", name=fm,
+                                 marker=dict(size=7, color=pal[i % len(pal)], opacity=0.75),
+                                 text=x["规则"], hovertemplate="%{text}<br>样本内 %{x:.2f} · 样本外 %{y:.2f}<extra></extra>"))
+    top = g.iloc[0]
+    fig.add_trace(go.Scatter(x=[top["样本内夏普"]], y=[top["样本外夏普"]], mode="markers+text", name="样本内第一（选中）",
+                             text=["选中"], textposition="top center",
+                             marker=dict(size=15, symbol="star", color=GREEN if passed else RED, line=dict(color="#fff", width=1))))
+    fig.add_hline(y=bh_oos, line=dict(color=GRAY, dash="dash"), annotation_text=f"持有 样本外 {bh_oos:.2f}",
+                  annotation_position="bottom right")
+    fig.add_hline(y=0, line=dict(color="#334155", width=1))
+    fig.update_layout(**_layout(height=380, title=title))
+    fig.update_layout(hovermode="closest")
+    fig.update_xaxes(title="样本内夏普（2014–2020）", gridcolor=GRID)
+    fig.update_yaxes(title="样本外夏普（2021 起）", gridcolor=GRID)
+    st.plotly_chart(fig, use_container_width=True, key=key)
+
+
+def report_page():
+    path = os.path.join(os.path.dirname(__file__), "data", "validation.pkl")
+    if not os.path.exists(path):
+        st.warning("还没有验证报告，运行 python validate.py 生成")
+        return
+    rep = load_validation(os.path.getmtime(path))
+    sp = rep["split"][:4]
+    st.markdown(f'<div class="hdr">📋 买卖信号验证报告 <span>生成于 {rep["computed_at"]} · 运行 validate.py 更新</span></div>',
+                unsafe_allow_html=True)
+    st.markdown(f"""
+**验证流程**
+
+1. **通用规则**：所有标的先用同一条规则、同一套参数——*{rep["generic_rule"]}*。
+   通过标准：≥10 笔交易、前后两半段夏普都 >0、去掉最好的 5% 交易仍赚钱、夏普和最大回撤都不差于买入持有。
+2. **样本外重选**（只对通用规则没通过的标的）：把数据切成 **2014–{int(sp) - 1}（样本内）** 和 **{sp} 至今（样本外）**。
+   只用样本内数据，从约 200 条候选（超卖抄底 / 均线+放量 / 布林 / 突破，各种参数）里按夏普选**第一名**；
+   样本外数据不参与挑选。样本外通过标准：≥5 笔、夏普 >0 且高于买入持有、回撤不差于持有、去掉最好 5% 交易仍赚钱。
+3. **邻近参数**：选中规则的参数前后挪一挪，样本外是否仍然有效（防止碰巧挑中一个尖峰参数）。
+4. **一律只看第一名**：如果第一名样本外失败，就判未通过，不回头挑第二名——否则等于偷看了样本外。
+
+所有回测：收盘出信号、次日开盘成交、每边成本 10bp；未计涨跌停无法成交与停牌。
+""")
+    rows = []
+    for k, it in rep["items"].items():
+        o, bo = it["final_oos"] or {}, it["bh_oos"] or {}
+        rows.append({"标的": it["name"], "通用规则": it["generic_verdict"], "最终规则": it["final_rule"],
+                     "结论": it["final_verdict"],
+                     "判定依据": "样本外（2021 起）" if it["final_rule"] != rep["generic_rule"] else "全样本（通用规则）",
+                     "样本外夏普（持有）": f'{_fmt(o.get("sharpe"))}（{_fmt(bo.get("sharpe"))}）',
+                     "样本外回撤（持有）": f'{_fmt(o.get("mdd"), "{:.0f}%")}（{_fmt(bo.get("mdd"), "{:.0f}%")}）',
+                     "全样本夏普（持有）": f'{_fmt(it["final_stats"]["sharpe"])}（{_fmt(it["bh_stats"]["sharpe"])}）',
+                     "样本外笔数": it["final_oos_n"]})
+    st.markdown('<div class="hdr">📊 结论汇总</div>', unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.caption("用通用规则的标的按全样本标准判定；样本外重选出来的规则按样本外标准判定。"
+               "上证50 的通用规则 2021 年后夏普虽高于持有，但全样本夏普低于持有，所以未通过；"
+               "样本外重选两轮的第一名都失败，见下方展开。")
+
+    for k, it in rep["items"].items():
+        with st.expander(f'{it["name"]} · {it["final_verdict"]}', expanded=False):
+            gs = it["generic_stats"]
+            st.markdown(f'**第 1 步 · 通用规则：{it["generic_verdict"]}**（{it["start"]} → {it["end"]}）  \n'
+                        f'夏普 {gs["sharpe"]:.2f}（持有 {it["bh_stats"]["sharpe"]:.2f}）· 最大回撤 {gs["mdd"]:.0f}%（持有 {it["bh_stats"]["mdd"]:.0f}%）· '
+                        f'{it["generic_n"]} 笔 · 前/后半段夏普 {it["generic_first"]:.2f} / {it["generic_second"]:.2f} · '
+                        f'去掉最好 5% 交易后年化 {it["generic_extop"]:+.1f}%')
+            if "search" not in it:
+                st.markdown("通用规则已通过，不需要重选。")
+                st.dataframe(it["table"].round(2), hide_index=True, use_container_width=True, key=f"rt_{k}")
+                continue
+            g = it["search"]
+            top = g.iloc[0]
+            st.markdown(f'**第 2 步 · 样本外重选**：{len(g)} 条候选，样本内第一是 *{top["规则"]}*：'
+                        f'样本内夏普 {top["样本内夏普"]:.2f} → 样本外 {top["样本外夏普"]:.2f}（持有 {it["bh_oos"]["sharpe"]:.2f}），'
+                        f'样本外 {int(top["样本外笔数"])} 笔。结论：**{it["final_verdict"]}**。  \n'
+                        f'全部候选样本内与样本外夏普的相关系数 {it["search_corr"]:+.2f}'
+                        + ("（接近 0：过去表现好坏对以后几乎没有预测力）" if abs(it["search_corr"]) < 0.2 else
+                           "（为负：过去表现越好的规则，以后反而越差）" if it["search_corr"] < 0 else ""))
+            _scatter(g, it["bh_oos"]["sharpe"], it["final_verdict"] != "未通过",
+                     "每个点是一条候选规则（星号 = 样本内第一，绿色=样本外通过，红色=失败）", f"sc_{k}")
+            st.dataframe(g.head(10).round(2), hide_index=True, use_container_width=True, key=f"top_{k}")
+            if "neighbors" in it:
+                nb = it["neighbors"]
+                ok = (nb["样本外夏普"] > it["bh_oos"]["sharpe"]).mean() * 100
+                st.markdown(f'**第 3 步 · 邻近参数**：{len(nb)} 组参数里 {ok:.0f}% 样本外夏普高于持有（{it["bh_oos"]["sharpe"]:.2f}）。')
+                st.dataframe(nb.round(2), hide_index=True, use_container_width=True, key=f"nb_{k}")
+            if "search2" in it:
+                g2 = it["search2"]
+                t2 = g2.iloc[0]
+                st.markdown(f'**第二轮（换成大盘股相关的 {len(g2)} 条规则：风格 / 估值 / 低波动 / 回撤抄底 / 急跌 / 双动量）**：'
+                            f'样本内第一 *{t2["规则"]}* 样本内 {t2["样本内夏普"]:.2f} → 样本外 {t2["样本外夏普"]:.2f}，仍失败。'
+                            f'样本内与样本外夏普相关系数 {it["search2_corr"]:+.2f}——2021 年前后规律反转，用历史挑规则会误导。'
+                            '结论：不再继续挖掘，上证50 只看位置，不给买卖信号。')
+                _scatter(g2, it["bh_oos"]["sharpe"], False, "第二轮候选（星号 = 样本内第一）", f"sc2_{k}")
+                st.dataframe(g2.head(10).round(2), hide_index=True, use_container_width=True, key=f"top2_{k}")
+
+    st.markdown('<div class="hdr">⚠️ 局限</div>', unsafe_allow_html=True)
+    st.markdown("""
+- 只有一次样本内/样本外切分，样本外约 6 年；中证2000 的选中规则样本外只有 8 笔，统计上偏弱。
+- 每个标的看了约 200 条规则，即使第一名样本外通过，也可能有部分运气成分；邻近参数一致是主要的安慰。
+- 个股用前复权价，未计分红税、涨跌停买不进/卖不出、停牌。
+- 规则会过时：建议每季度运行一次 `validate.py`，结论变成"未通过"就停用。
+""")
+
+
 # ── 主页面 ──────────────────────────────────────────────────────
 st.markdown('<div style="font-size:1.5rem;font-weight:800;color:#f1f5f9">A股信号</div>', unsafe_allow_html=True)
-tab_idx, tab_stk = st.tabs(["📊 中证2000 × 上证50", "🏷 个股"])
+tab_idx, tab_stk, tab_rep = st.tabs(["📊 中证2000 × 上证50", "🏷 个股", "📋 验证报告"])
 with tab_idx:
     index_page()
 with tab_stk:
     stock_page()
+with tab_rep:
+    report_page()
