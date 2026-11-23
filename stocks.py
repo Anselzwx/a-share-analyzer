@@ -88,6 +88,11 @@ def summary(d: pd.DataFrame) -> dict:
 # ── 买卖规则回测（收盘出信号 → 次日开盘成交，每边 10bp） ─────────────
 COST = 0.001
 SIGNAL_RULE = "RSI超卖+阳线确认买 / RSI>60卖 / 止损-10%"
+MA_RULE = "站上MA30+放量确认 / 跌破MA30"
+BOLL_RULE = "布林-1.5σ后阳线确认买 / 上轨+2σ卖"
+OOS_START = "2021-01-01"
+# 按标的指定的规则：在 2014–2020 样本内从 ~190 条候选里选夏普第一，2021 起样本外检验；没列出的用通用规则
+RULE_FOR = {"csi2000": MA_RULE, "002244": BOLL_RULE}
 
 
 def fetch_kline_long(code: str, start_year: int = 2014) -> pd.DataFrame:
@@ -137,8 +142,11 @@ def rules(d: pd.DataFrame) -> Dict[str, pd.Series]:
     vma = v.shift(1).rolling(5).mean()
     up = (c > o) & (c > c.shift(1))                       # 阳线且收涨
     oversold_confirm = (r.rolling(5).min() < 30) & up & (r > r.shift(1))
+    m30 = ma(30)
     return {
         SIGNAL_RULE: _state(oversold_confirm, r > 60, c, 0.10),
+        MA_RULE: _state((c > m30) & (c.shift(1) <= m30.shift(1)) & (v > 1.2 * vma), c < m30),
+        BOLL_RULE: _state((c.shift(1) < mid.shift(1) - 1.5 * sd.shift(1)) & up, c > mid + 2 * sd),
         "RSI<30买 / >60卖（无确认）": _state(r < 30, r > 60),
         "RSI超卖+阳线确认 / RSI>60（无止损）": _state(oversold_confirm, r > 60),
         "RSI<30+MACD柱回升确认 / RSI>60": _state((r < 30) & (hist > hist.shift(1)), r > 60),
@@ -175,7 +183,17 @@ def backtest(d: pd.DataFrame, state: pd.Series) -> dict:
     return dict(ret=ret, bh=r, equity=(1 + ret).cumprod(), bh_equity=(1 + r).cumprod(),
                 stats=_stats(ret), first=_stats(ret.iloc[:h]), second=_stats(ret.iloc[h:]),
                 n_trades=int(len(tr)), win=float((tr > 0).mean() * 100) if len(tr) else float("nan"),
-                exposure=float(pos.mean() * 100), ex_top=_stats(ret2), split=str(ret.index[h].date()))
+                exposure=float(pos.mean() * 100), ex_top=_stats(ret2), split=str(ret.index[h].date()),
+                oos=_stats(ret[OOS_START:]) if len(ret[OOS_START:]) > 60 else None,
+                oos_n=int((pos.diff() == 1)[OOS_START:].sum()))
+
+
+def verdict_oos(b: dict, bh: dict) -> str:
+    """样本外检验（规则只用 2021 年前的数据选出）：2021 起 ≥5 笔、夏普 >0 且高于持有、回撤不差于持有、去掉最好 5% 交易仍赚钱"""
+    o, ob = b["oos"], bh["oos"]
+    if o and b["oos_n"] >= 5 and o["sharpe"] > max(ob["sharpe"], 0) and o["mdd"] >= ob["mdd"] and b["ex_top"]["cagr"] > 0:
+        return "通过（样本外）"
+    return "未通过"
 
 
 def verdict(b: dict, bh: dict) -> str:
@@ -207,16 +225,28 @@ def compare(d: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def evaluate(d: pd.DataFrame) -> dict:
-    """主信号：当前状态 + 回测 + 检验结论 + 全部规则对比"""
-    b = backtest(d, rules(d)[SIGNAL_RULE])
+def evaluate(d: pd.DataFrame, key: str = None) -> dict:
+    """标的的信号：当前状态 + 回测 + 检验结论 + 全部规则对比"""
+    rule = RULE_FOR.get(key, SIGNAL_RULE)
+    b = backtest(d, rules(d)[rule])
     bh = backtest(d, pd.Series(1.0, index=d.index))
-    return dict(now=signal_now(d), bt=b, bh=bh, verdict=verdict(b, bh), table=compare(d))
+    vd = verdict_oos(b, bh) if rule != SIGNAL_RULE else verdict(b, bh)
+    tb = compare(d)
+    tb = pd.concat([tb[tb["规则"] == rule], tb[tb["规则"] != rule]], ignore_index=True)
+    return dict(rule=rule, now=signal_now(d, rule), bt=b, bh=bh, verdict=vd, table=tb, levels=levels(d))
 
 
-def signal_now(d: pd.DataFrame) -> dict:
-    """主信号当前状态 + 最近一次买卖"""
-    st = rules(d)[SIGNAL_RULE]
+def levels(d: pd.DataFrame) -> dict:
+    c = d["close"]
+    mid, sd = c.rolling(20).mean(), c.rolling(20).std()
+    return dict(rsi=float(_rsi(c).iloc[-1]), ma30=float(c.rolling(30).mean().iloc[-1]),
+                boll_lo=float((mid - 1.5 * sd).iloc[-1]), boll_up=float((mid + 2 * sd).iloc[-1]),
+                vma5=float(d["vol"].iloc[-6:-1].mean()), vol=float(d["vol"].iloc[-1]))
+
+
+def signal_now(d: pd.DataFrame, rule: str = SIGNAL_RULE) -> dict:
+    """规则当前状态 + 最近一次买卖"""
+    st = rules(d)[rule]
     r = _rsi(d["close"])
     chg = st.diff().fillna(0)
     chg.iloc[0] = st.iloc[0]

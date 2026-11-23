@@ -187,7 +187,7 @@ def index_page():
     f = a_share.indicators(hist)
     live_section(f)
 
-    st.markdown('<div class="hdr">🎯 确认型买卖信号 <span>和个股页同一条规则、同一套检验</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="hdr">🎯 确认型买卖信号 <span>收盘出信号，次日开盘执行</span></div>', unsafe_allow_html=True)
     evs = {}
     for key, nm in (("csi2000", "中证2000"), ("sz50", "上证50")):
         try:
@@ -197,7 +197,7 @@ def index_page():
             continue
         st.markdown(f'<div style="font-weight:700;color:#e2e8f0;margin:.6rem 0 .3rem">{nm}</div>', unsafe_allow_html=True)
         signal_block(key, evs[key], float(f["s" if key == "csi2000" else "b"].iloc[-1]), "{:,.0f}")
-    st.caption("中证2000 的主信号仍是上面的\"收盘>MA20 趋势\"（定位控回撤）。确认型信号检验结果："
+    st.caption("上面\"收盘>MA20 趋势\"是原来的控回撤主信号，这里是另外选出、做过样本外检验的买卖信号。检验结果："
                + "；".join(f'{nm} {evs[k]["verdict"]}' for k, nm in (("csi2000", "中证2000"), ("sz50", "上证50")) if k in evs)
                + "。未通过的只作观察。")
     live, _ = load_live()
@@ -300,17 +300,17 @@ def load_kline(code: str):
 @st.cache_data(ttl=300, show_spinner=False)
 def load_eval_stock(code: str):
     d = load_kline(code)
-    return stocks.evaluate(d[d.index >= "2014-01-01"].iloc[60:])
+    return stocks.evaluate(d[d.index >= "2014-01-01"].iloc[60:], code)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_eval_index(key: str):
     hist, _, _ = load_data()
     d = hist[key][hist[key].index >= "2014-01-01"].rename(columns={"amount": "vol"}).dropna(subset=["open", "close"])
-    return stocks.evaluate(d)
+    return stocks.evaluate(d, key)
 
 
-VERDICT_COLOR = {"通过": GREEN, "通过（控回撤）": AMBER, "未通过": GRAY}
+VERDICT_COLOR = {"通过": GREEN, "通过（样本外）": GREEN, "通过（控回撤）": AMBER, "未通过": GRAY}
 
 
 def signal_block(key: str, ev: dict, price: float, fmt: str = "{:.2f}"):
@@ -326,12 +326,24 @@ def signal_block(key: str, ev: dict, price: float, fmt: str = "{:.2f}"):
     last = (f'最近一次：{sg["last"][0]} {sg["last"][1]} @ {fmt.format(sg["last"][2])}' if sg["last"] else "历史上没有触发过")
     if sg["holding"] and sg["last"]:
         last += f'（至今 {(price / sg["last"][2] - 1) * 100:+.1f}%）'
-    stop_px = fmt.format(sg["last"][2] * 0.9) if sg["holding"] and sg["last"] else "—"
-    nxt = (f'卖出：RSI14 升破 60（现 {sg["rsi"]:.1f}），或收盘跌破止损价 {stop_px}' if sg["holding"]
-           else f'买入：近 5 日 RSI14 曾 &lt;30，且出现收涨阳线、RSI 回升（现 RSI {sg["rsi"]:.1f}）')
+    lv, rule = ev["levels"], ev["rule"]
+    if rule == stocks.MA_RULE:
+        nxt = (f'卖出：收盘跌破 MA30 {fmt.format(lv["ma30"])}（现 {(price / lv["ma30"] - 1) * 100:+.1f}%）' if sg["holding"]
+               else f'买入：收盘由下向上站上 MA30 {fmt.format(lv["ma30"])}，且成交放大到前 5 日均量 1.2 倍以上')
+    elif rule == stocks.BOLL_RULE:
+        nxt = (f'卖出：收盘升破布林上轨 {fmt.format(lv["boll_up"])}' if sg["holding"]
+               else f'买入：前一日收盘跌破布林 -1.5σ（现 {fmt.format(lv["boll_lo"])}），次日收涨阳线确认')
+    else:
+        stop_px = fmt.format(sg["last"][2] * 0.9) if sg["holding"] and sg["last"] else "—"
+        nxt = (f'卖出：RSI14 升破 60（现 {lv["rsi"]:.1f}），或收盘跌破止损价 {stop_px}' if sg["holding"]
+               else f'买入：近 5 日 RSI14 曾 &lt;30，且出现收涨阳线、RSI 回升（现 RSI {lv["rsi"]:.1f}）')
     s_, h_ = bt["stats"], ev["bh"]["stats"]
     perf = (f'夏普 {s_["sharpe"]:.2f}（持有 {h_["sharpe"]:.2f}）· 回撤 {s_["mdd"]:.0f}%（持有 {h_["mdd"]:.0f}%）· {bt["n_trades"]} 笔<br>'
             f'前/后半段夏普 {bt["first"]["sharpe"]:.2f} / {bt["second"]["sharpe"]:.2f} · 去掉最好 5% 交易后年化 {bt["ex_top"]["cagr"]:+.1f}%')
+    if rule != stocks.SIGNAL_RULE and bt["oos"]:
+        o, ob = bt["oos"], ev["bh"]["oos"]
+        perf = (f'<b>样本外（2021 起）</b>夏普 {o["sharpe"]:.2f}（持有 {ob["sharpe"]:.2f}）· 回撤 {o["mdd"]:.0f}%（持有 {ob["mdd"]:.0f}%）· {bt["oos_n"]} 笔<br>'
+                f'全样本夏普 {s_["sharpe"]:.2f}（持有 {h_["sharpe"]:.2f}）· 回撤 {s_["mdd"]:.0f}%（持有 {h_["mdd"]:.0f}%）')
     vc = VERDICT_COLOR.get(vd, GRAY)
     label = "确认型买卖信号" + ("" if ok else "（未通过检验，仅供观察）")
     c1, c2 = st.columns([1, 1], gap="small")
@@ -339,9 +351,10 @@ def signal_block(key: str, ev: dict, price: float, fmt: str = "{:.2f}"):
                       f'{last}<br>{nxt}', acol, acol), unsafe_allow_html=True)
     c2.markdown(_card("回测检验", vd, perf, vc, vc), unsafe_allow_html=True)
     note = "盘中按实时价计算，收盘可能变" if in_session else f'按 {sg["date"]} 收盘'
-    st.caption(f"规则：{stocks.SIGNAL_RULE}。收盘出信号，次日开盘执行，{note}。"
-               "检验标准：≥10 笔、前后两段夏普都为正、去掉最好 5% 交易仍赚钱，且夏普和回撤都不差于买入持有"
-               "（夏普只差一点但回撤少 10 个百分点以上算\"控回撤\"）。")
+    how = ("这条规则只用 2014–2020 年数据，从约 190 条候选里按夏普选出，2021 年以后的数据没参与挑选，用来做样本外检验。"
+           if rule != stocks.SIGNAL_RULE else
+           "通用规则，所有标的同一套参数。检验标准：≥10 笔、前后两段夏普都为正、去掉最好 5% 交易仍赚钱，且夏普和回撤都不差于买入持有。")
+    st.caption(f"规则：{rule}。收盘出信号，次日开盘执行，{note}。{how}")
 
 
 def backtest_block(key: str, ev: dict):
@@ -349,7 +362,7 @@ def backtest_block(key: str, ev: dict):
     st.markdown(f'<div class="hdr">📈 买卖规则回测 <span>{b["equity"].index[0].date()} 至今 · 收盘出信号，次日开盘成交 · 每边 10bp · '
                 f'前后半段以 {b["split"]} 分界</span></div>', unsafe_allow_html=True)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.04)
-    fig.add_trace(go.Scatter(x=b["equity"].index, y=b["equity"].values, name="确认型信号",
+    fig.add_trace(go.Scatter(x=b["equity"].index, y=b["equity"].values, name=ev["rule"],
                              line=dict(color=C2000, width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(x=bh["equity"].index, y=bh["equity"].values, name="买入持有",
                              line=dict(color=GRAY, width=1.2, dash="dot")), row=1, col=1)
@@ -363,7 +376,7 @@ def backtest_block(key: str, ev: dict):
     fig.update_yaxes(ticksuffix="%", row=2, col=1)
     st.plotly_chart(fig, use_container_width=True, key=f"eq_{key}")
     st.dataframe(ev["table"].round(2), hide_index=True, use_container_width=True, key=f"cmp_{key}")
-    st.caption("第一行是上面用的信号；其余是对照规则（同一套检验）。未计涨跌停无法成交、停牌。")
+    st.caption("第一行是上面用的信号；其余是对照规则（\"检验\"列为全样本标准）。未计涨跌停无法成交、停牌。")
 
 
 def add_markers(fig, g: pd.DataFrame, sg: dict, hi="high", lo="low"):
