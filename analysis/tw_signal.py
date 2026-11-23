@@ -48,7 +48,7 @@ def fetch_tw_close() -> dict:
     return result
 
 
-def fetch_jf_price_now() -> float | None:
+def fetch_jf_price_now():
     """拉取金富科技当前价格"""
     try:
         import requests
