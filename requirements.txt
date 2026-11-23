@@ -1,12 +1,5 @@
-akshare>=1.18.84
-streamlit
+streamlit==1.45.1
 pandas
 numpy
 plotly
-xgboost
-scikit-learn
-joblib
-pyarrow
-lxml
-beautifulsoup4
-yfinance
+requests
