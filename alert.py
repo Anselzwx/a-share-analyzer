@@ -1,7 +1,7 @@
 """盘中买卖点邮件提醒（本机 cron 每 5 分钟运行一次）
 
 - 只在交易时段工作：A股 9:30–11:30 / 13:00–15:00，港股 9:30–12:00 / 13:00–16:10（北京时间）
-- 盘中预警：按现价当作今日收盘，若规则今天由"空仓→持有"（买）或"持有→空仓"（卖），发一封邮件
+- 盘中预警（A股 14:30 后、港股 15:30 后才发）：按现价当作今日收盘，若规则今天由"空仓→持有"（买）或"持有→空仓"（卖），发一封邮件
 - 收盘确认：收盘后用最终收盘价再算一次，发确认邮件（明天开盘执行），并列出盘中预警被取消的
 - 只提醒检验通过的规则（validation.pkl 里 final_verdict 以"通过"开头）；同一标的同一天同类提醒只发一次
 - 指数（中证2000）只在收盘后、拿到当日完整日线时确认
@@ -32,6 +32,7 @@ CN = timezone(timedelta(hours=8))
 SESS = {"A": ((time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))),
         "HK": ((time(9, 30), time(12, 0)), (time(13, 0), time(16, 10)))}
 CLOSE = {"A": time(15, 0), "HK": time(16, 10)}
+PREVIEW_FROM = {"A": time(14, 30), "HK": time(15, 30)}   # 盘中预警只在收盘前这段时间发，信号基本定型
 
 
 def now_cn() -> datetime:
@@ -206,7 +207,7 @@ def main(dry=False, test=False):
             if closed and not rec.get("confirm"):
                 rec["confirm"] = side
                 confirms.append(r)
-            elif not closed and rec.get("preview") != side:
+            elif not closed and t >= PREVIEW_FROM[mkt] and rec.get("preview") != side:
                 rec["preview"] = side
                 previews.append(r)
         elif closed and rec.get("preview") and not rec.get("confirm"):
