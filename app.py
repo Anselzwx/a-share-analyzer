@@ -15,8 +15,17 @@ import requests
 import streamlit as st
 from plotly.subplots import make_subplots
 
+import importlib
+
 import a_share
 import stocks
+
+# Streamlit Cloud 拉到新代码只重跑 app.py，已导入的模块不会刷新：文件比已加载版本新就重新加载
+for _m in (a_share, stocks):
+    _mt = os.path.getmtime(_m.__file__)
+    if getattr(_m, "_loaded_mtime", None) != _mt:      # 首次也重载一次，保证旧进程里的旧模块被替换
+        importlib.reload(_m)
+    _m._loaded_mtime = _mt
 
 st.set_page_config(page_title="A股信号", page_icon="📈", layout="wide")
 
