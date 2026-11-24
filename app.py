@@ -333,7 +333,7 @@ def load_eval_index(key: str):
     return _with_meta(stocks.evaluate(d, key), key)
 
 
-VERDICT_COLOR = {"通过": GREEN, "通过（样本外）": GREEN, "通过（控回撤）": AMBER, "未通过": GRAY}
+VERDICT_COLOR = {"数据不足": GRAY, "通过": GREEN, "通过（样本外）": GREEN, "通过（控回撤）": AMBER, "未通过": GRAY}
 
 
 def signal_block(key: str, ev: dict, price: float, fmt: str = "{:.2f}"):
@@ -374,7 +374,10 @@ def signal_block(key: str, ev: dict, price: float, fmt: str = "{:.2f}"):
     if rule != stocks.SIGNAL_RULE and fs is not None and fs < 0.3:
         perf += f'<br><span style="color:{AMBER}">⚠ 同类规则只有 {fs * 100:.0f}% 样本外胜过持有，偏运气，谨慎使用</span>'
     vc = VERDICT_COLOR.get(vd, GRAY)
-    label = "确认型买卖信号" + ("" if ok else "（未通过检验，仅供观察）")
+    label = "确认型买卖信号" + ("" if ok else "（数据不足，不给信号）" if vd == stocks.NO_DATA else "（未通过检验，仅供观察）")
+    if vd == stocks.NO_DATA:
+        perf = f'上市以来只有 {len(bt["ret"]) + 60} 个交易日（验证至少需要约 2 年，且要有 2021 年前的数据挑规则），无法检验任何规则'
+        last, nxt = "—", "等数据积累够了再运行 validate.py"
     c1, c2 = st.columns([1, 1], gap="small")
     c1.markdown(_card(label, sg["action"] if ok else f'<span style="opacity:.6">{sg["action"]}</span>',
                       f'{last}<br>{nxt}', acol, acol), unsafe_allow_html=True)
@@ -604,6 +607,9 @@ def report_page():
                         f'夏普 {gs["sharpe"]:.2f}（持有 {it["bh_stats"]["sharpe"]:.2f}）· 最大回撤 {gs["mdd"]:.0f}%（持有 {it["bh_stats"]["mdd"]:.0f}%）· '
                         f'{it["generic_n"]} 笔 · 前/后半段夏普 {it["generic_first"]:.2f} / {it["generic_second"]:.2f} · '
                         f'去掉最好 5% 交易后年化 {it["generic_extop"]:+.1f}%')
+            if it.get("short"):
+                st.markdown(f"数据不足：{it['start']} 起只有这么多数据，无法做样本外检验，不给买卖信号。")
+                continue
             if "search" not in it:
                 st.markdown("通用规则已通过，不需要重选。")
                 st.dataframe(it["table"].round(2), hide_index=True, use_container_width=True, key=f"rt_{k}")

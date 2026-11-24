@@ -57,6 +57,8 @@ def select_rules(U):
     chosen = {}
     for key, (nm, d) in U.items():
         cost = stocks.cost_for(key)
+        if len(d) < stocks.MIN_BARS or not len(d[:stocks.OOS_START]):
+            continue                                   # 数据太短 / 没有样本内数据：不选规则
         bh = stocks.backtest(d, pd.Series(1.0, index=d.index), cost)
         gb = stocks.backtest(d, stocks.rules(d)[stocks.SIGNAL_RULE], cost)
         if stocks.verdict(gb, bh) != "未通过":
@@ -158,7 +160,11 @@ def main():
                     bh_stats=bh["stats"], bh_oos=bh["oos"], bh_is=_stats(bh["ret"][:SPLIT]),
                     final_rule=ev["rule"], final_verdict=ev["verdict"], final_oos=ev["bt"]["oos"], final_oos_n=ev["bt"]["oos_n"],
                     final_stats=ev["bt"]["stats"], table=ev["table"])
-        if item["generic_verdict"] == "未通过" or key in stocks.RULE_FOR:
+        short = len(d) < stocks.MIN_BARS
+        item["short"] = short
+        if short:
+            item["generic_verdict"] = stocks.NO_DATA
+        if not short and (item["generic_verdict"] == "未通过" or key in stocks.RULE_FOR):
             g = search(d, stocks.candidates(d), cost)
             item["search"] = g
             item["search_corr"] = float(g["样本内夏普"].corr(g["样本外夏普"]))

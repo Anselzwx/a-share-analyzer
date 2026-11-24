@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 
 # 想加股票就往这里加：A股 6 位代码，港股 "hk" + 5 位代码；加完运行 python validate.py 给它选规则
-STOCKS: List[str] = ["002831", "002244", "600487", "601869", "600460", "600172", "hk02269", "603259", "hk09988"]
+STOCKS: List[str] = ["002831", "002244", "600487", "601869", "600460", "600172", "hk02269", "603259", "hk09988", "hk00100"]
 
 
 def is_hk(code: str) -> bool:
@@ -172,6 +172,8 @@ SIGNAL_RULE = "RSI超卖+阳线确认买 / RSI>60卖 / 止损-10%"
 MA_RULE = "站上MA30+放量 / 跌破MA30"
 BOLL_RULE = "布林-1.5σ+阳线 / 上轨"
 OOS_START = "2021-01-01"
+MIN_BARS = 488          # 少于约 2 年数据不做验证、不给信号
+NO_DATA = "数据不足"
 RULES_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "rules.json")
 
 
@@ -384,6 +386,8 @@ def evaluate(d: pd.DataFrame, key: str = None) -> dict:
     b = backtest(d, stt, cost)
     bh = backtest(d, pd.Series(1.0, index=d.index), cost)
     vd = verdict_oos(b, bh) if rule != SIGNAL_RULE else verdict(b, bh)
+    if len(d) < MIN_BARS:
+        vd = NO_DATA
     tb = compare(d, cost, {rule: stt})
     tb = pd.concat([tb[tb["规则"] == rule], tb[tb["规则"] != rule]], ignore_index=True)
     return dict(rule=rule, now=signal_now(d, rule), bt=b, bh=bh, verdict=vd, table=tb, levels=levels(d))
