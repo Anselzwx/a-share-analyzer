@@ -38,9 +38,14 @@ def _session() -> requests.Session:
     return s
 
 
+_EM_DOWN = {}      # host → 熔断到期时间：一次彻底失败后 10 分钟内不再请求，避免页面每个接口都等超时
+
+
 def _em(path: str, params: dict, host: str = "push2", tries: int = 2, timeout: float = 8) -> dict:
     """东财接口：https 经常被服务端直接断开，http 稳定 → 先 http 再 https，轮流重试"""
     import time
+    if time.time() < _EM_DOWN.get(host, 0):
+        raise RuntimeError(f"东财 {host} 暂不可用（熔断中）")
     err = None
     for i in range(tries):
         for scheme in ("http", "https"):
@@ -54,6 +59,7 @@ def _em(path: str, params: dict, host: str = "push2", tries: int = 2, timeout: f
                 err = e
         if i < tries - 1:
             time.sleep(1 + i)
+    _EM_DOWN[host] = time.time() + 600
     raise RuntimeError(f"东财 {path} 失败：{type(err).__name__}")
 
 
@@ -84,7 +90,7 @@ def fetch_history() -> Dict[str, pd.DataFrame]:
 def _em_recent(key: str, n: int = 30) -> pd.DataFrame:
     r = _em("/api/qt/stock/kline/get", dict(
         secid=EM_SECID[key], fields1="f1", fields2="f51,f52,f53,f54,f55,f57",
-        klt=101, fqt=0, lmt=n, end="20500101"), host="push2his", tries=3)
+        klt=101, fqt=0, lmt=n, end="20500101"), host="push2his", tries=2, timeout=5)
     rows = [x.split(",") for x in r["klines"]]
     d = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "amount"])
     d["date"] = pd.to_datetime(d["date"])

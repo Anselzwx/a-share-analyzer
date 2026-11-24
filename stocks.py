@@ -55,18 +55,26 @@ def fetch_quotes(codes: List[str]) -> Dict[str, dict]:
     return out
 
 
-def fetch_kline(code: str, n: int = 500) -> pd.DataFrame:
+_TX_DOWN_UNTIL = 0.0      # 腾讯日线接口失败后，10 分钟内不再请求（避免每只都等超时）
+
+
+def fetch_kline(code: str, n: int = 500, timeout: float = 5, tries: int = 1) -> pd.DataFrame:
     """腾讯最近 n 根前复权日线（成交量：A股为手，港股为股）"""
+    import time as _t
+    global _TX_DOWN_UNTIL
+    if _t.time() < _TX_DOWN_UNTIL:
+        raise RuntimeError("腾讯日线暂不可用（熔断中）")
     sym = _sym(code)
     j = None
-    for _ in range(3):
+    for _ in range(tries):
         try:
             j = _session().get(f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={sym},day,,,{n},qfq",
-                               timeout=10).json()["data"][sym]
+                               timeout=timeout).json()["data"][sym]
             break
         except Exception:
             j = None
     if j is None:
+        _TX_DOWN_UNTIL = _t.time() + 600
         raise RuntimeError(f"{code} 腾讯日线获取失败")
     rows = [r[:6] for r in (j.get("qfqday") or j.get("day"))]
     df = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "vol"])
