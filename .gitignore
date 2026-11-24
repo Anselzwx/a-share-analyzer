@@ -8,3 +8,4 @@ __pycache__/
 .DS_Store
 !cache/capital_hot.csv
 !cache/capital_short.csv
+alert.log
