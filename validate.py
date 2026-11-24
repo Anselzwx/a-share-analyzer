@@ -5,6 +5,8 @@
 方法：
 1. 通用规则（RSI 超卖 + 阳线确认 / RSI>60 / 止损 10%）对所有标的做全样本检验。
 2. 未通过的标的：2014–2020（样本内）从候选规则里按夏普取第一，2021 起（样本外）检验；只看第一名，不挑。
+   通过条件：样本外标准（见 stocks.verdict_oos）。同类候选样本外胜过持有的比例只记录、不作门槛。
+   通过的写入 data/rules.json，app 自动使用；没通过的保留通用规则并标"未通过"。
 3. 选中规则的邻近参数稳健性。
 4. 记录所有候选的样本内/样本外夏普，算两者相关性（看"过去好的以后是否还好"）。
 """
@@ -40,37 +42,34 @@ def load_universe():
         U[key] = (nm, d)
     q = stocks.fetch_quotes(stocks.STOCKS)
     for c in stocks.STOCKS:
-        d = stocks.fetch_kline_long(c)
+        d = stocks.refresh_cache(c)
         U[c] = (q.get(c, {}).get("name", c), d[d.index >= "2014-01-01"].iloc[60:])
     return U, hist
 
 
-def candidates(d: pd.DataFrame):
-    """技术类候选（~190 条）"""
-    c, o, v = d["close"], d["open"], d["vol"]
-    r = stocks._rsi(c)
-    dif = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
-    hist = dif - dif.ewm(span=9, adjust=False).mean()
-    up = (c > o) & (c > c.shift(1))
-    vma = v.shift(1).rolling(5).mean()
-    S = stocks._state
-    for lo, hi, stop, cf in itertools.product((20, 25, 30, 35), (50, 55, 60, 65, 70), (0, 0.08, 0.1, 0.15), ("阳线", "MACD柱", "无")):
-        conf = {"阳线": up & (r > r.shift(1)), "MACD柱": hist > hist.shift(1), "无": pd.Series(True, index=d.index)}[cf]
-        yield "超卖", f"超卖 RSI<{lo} 确认{cf} / RSI>{hi} 止损{int(stop * 100)}%", S((r.rolling(5).min() < lo) & conf, r > hi, c, stop or None)
-    for n, vc, slope in itertools.product((10, 20, 30, 60, 120), (False, True), (False, True)):
-        m = c.rolling(n).mean()
-        e = c > m
-        if vc:
-            e = e & (c.shift(1) <= m.shift(1)) & (v > 1.2 * vma)
-        if slope:
-            e = e & (m > m.shift(5))
-        yield "均线", f"站上MA{n}{'+放量' if vc else ''}{'+均线向上' if slope else ''} / 跌破MA{n}", S(e, c < m)
-    mid, sd = c.rolling(20).mean(), c.rolling(20).std()
-    for k, ex in itertools.product((1.5, 2.0, 2.5), ("中轨", "上轨")):
-        yield "布林", f"布林-{k}σ+阳线 / {ex}", S((c.shift(1) < mid.shift(1) - k * sd.shift(1)) & up, c > (mid if ex == "中轨" else mid + 2 * sd))
-    for N, M in itertools.product((20, 55, 120), (10, 20, 60)):
-        if M < N:
-            yield "突破", f"突破{N}日高 / 跌破{M}日低", S(c > d["high"].shift(1).rolling(N).max(), c < d["low"].shift(1).rolling(M).min())
+def _family_share(g: pd.DataFrame, fam: str, bh_oos: float) -> float:
+    x = g[g["类别"] == fam]
+    return float((x["样本外夏普"] > bh_oos).mean()) if len(x) else 0.0
+
+
+def select_rules(U):
+    """固定流程：通用规则通过 → 用通用；否则样本内第一 + 样本外通过 + 同类过半 → 写入；否则未通过"""
+    chosen = {}
+    for key, (nm, d) in U.items():
+        cost = stocks.cost_for(key)
+        bh = stocks.backtest(d, pd.Series(1.0, index=d.index), cost)
+        gb = stocks.backtest(d, stocks.rules(d)[stocks.SIGNAL_RULE], cost)
+        if stocks.verdict(gb, bh) != "未通过":
+            continue
+        g = search(d, stocks.candidates(d), cost)
+        if not len(g):
+            continue
+        top = g.iloc[0]
+        b = stocks.backtest(d, stocks.rule_series(d, top["规则"]), cost)
+        share = _family_share(g, top["类别"], bh["oos"]["sharpe"]) if bh["oos"] else 0
+        if stocks.verdict_oos(b, bh) != "未通过":        # 同类占比只记录在报告里，不作门槛（与最初公布的流程一致）
+            chosen[key] = top["规则"]
+    return chosen
 
 
 def candidates_largecap(d: pd.DataFrame, small: pd.Series):
@@ -102,8 +101,8 @@ def candidates_largecap(d: pd.DataFrame, small: pd.Series):
         yield "双动量", f"双动量：{n}日涨幅>0 且 强于2000", ((c / c.shift(n) > 1) & (c / c.shift(n) > sm / sm.shift(n))).astype(float)
 
 
-def _row(d, fam, name, sig):
-    b = stocks.backtest(d, sig.fillna(0))
+def _row(d, fam, name, sig, cost):
+    b = stocks.backtest(d, sig.fillna(0), cost)
     s = sig.fillna(0).shift(1).fillna(0)
     entries = s.diff() == 1
     return dict(类别=fam, 规则=name, 样本内夏普=_stats(b["ret"][:SPLIT])["sharpe"], 样本外夏普=_stats(b["ret"][SPLIT:])["sharpe"],
@@ -111,8 +110,8 @@ def _row(d, fam, name, sig):
                 全样本夏普=b["stats"]["sharpe"], 全样本回撤=b["stats"]["mdd"], 去top5年化=b["ex_top"]["cagr"])
 
 
-def search(d, gen):
-    g = pd.DataFrame([_row(d, f, n, s) for f, n, s in gen])
+def search(d, gen, cost=stocks.COST):
+    g = pd.DataFrame([_row(d, f, n, (s() if callable(s) else s), cost) for f, n, s in gen])
     return g[g["样本内笔数"] >= 5].sort_values("样本内夏普", ascending=False).reset_index(drop=True)
 
 
@@ -140,24 +139,36 @@ def neighbors_boll(d):
 
 def main():
     U, hist = load_universe()
+    chosen = select_rules(U)
+    import json
+    with open(stocks.RULES_JSON, "w", encoding="utf-8") as f:
+        json.dump(chosen, f, ensure_ascii=False, indent=1)
+    stocks.RULE_FOR.clear()
+    stocks.RULE_FOR.update(chosen)
+    print("按标的选出的规则：", chosen)
     rep = dict(computed_at=datetime.now().strftime("%Y-%m-%d %H:%M"), split=SPLIT, generic_rule=stocks.SIGNAL_RULE, items={})
     for key, (nm, d) in U.items():
         ev = stocks.evaluate(d, key)
         bh = ev["bh"]
-        gen_b = stocks.backtest(d, stocks.rules(d)[stocks.SIGNAL_RULE])
-        item = dict(name=nm, start=str(d.index[0].date()), end=str(d.index[-1].date()),
+        cost = stocks.cost_for(key)
+        gen_b = stocks.backtest(d, stocks.rules(d)[stocks.SIGNAL_RULE], cost)
+        item = dict(name=nm, code=stocks.display_code(key) if key not in ("csi2000", "sz50") else "", cost=cost, start=str(d.index[0].date()), end=str(d.index[-1].date()),
                     generic_verdict=stocks.verdict(gen_b, bh), generic_stats=gen_b["stats"], generic_first=gen_b["first"]["sharpe"],
                     generic_second=gen_b["second"]["sharpe"], generic_extop=gen_b["ex_top"]["cagr"], generic_n=gen_b["n_trades"],
                     bh_stats=bh["stats"], bh_oos=bh["oos"], bh_is=_stats(bh["ret"][:SPLIT]),
                     final_rule=ev["rule"], final_verdict=ev["verdict"], final_oos=ev["bt"]["oos"], final_oos_n=ev["bt"]["oos_n"],
                     final_stats=ev["bt"]["stats"], table=ev["table"])
         if item["generic_verdict"] == "未通过" or key in stocks.RULE_FOR:
-            g = search(d, candidates(d))
+            g = search(d, stocks.candidates(d), cost)
             item["search"] = g
             item["search_corr"] = float(g["样本内夏普"].corr(g["样本外夏普"]))
-            if key == "csi2000":
+            top = g.iloc[0]
+            item["family"] = top["类别"]
+            item["family_share"] = _family_share(g, top["类别"], bh["oos"]["sharpe"]) if bh["oos"] else 0.0
+            item["family_n"] = int((g["类别"] == top["类别"]).sum())
+            if top["规则"] == stocks.MA_RULE:
                 item["neighbors"] = neighbors_ma(d)
-            elif key == "002244":
+            elif top["规则"] == stocks.BOLL_RULE:
                 item["neighbors"] = neighbors_boll(d)
             if key == "sz50":
                 g2 = search(d, candidates_largecap(hist["sz50"][hist["sz50"].index >= "2012-01-01"]

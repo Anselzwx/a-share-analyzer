@@ -6,6 +6,7 @@
 import io
 import os
 import pickle
+import re
 
 import numpy as np
 import pandas as pd
@@ -295,20 +296,32 @@ def index_page():
 # ── 个股页 ──────────────────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner="加载日线…")
 def load_kline(code: str):
-    return stocks.indicators(stocks.fetch_kline_long(code))
+    return stocks.indicators(stocks.load_kline_cached(code))
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_eval_stock(code: str):
     d = load_kline(code)
-    return stocks.evaluate(d[d.index >= "2014-01-01"].iloc[60:], code)
+    return _with_meta(stocks.evaluate(d[d.index >= "2014-01-01"].iloc[60:], code), code)
+
+
+def _with_meta(ev: dict, key: str) -> dict:
+    """附上验证报告里的稳健度（同类规则样本外胜过持有的比例）"""
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "data", "validation.pkl"), "rb") as f:
+            it = pickle.load(f)["items"].get(key, {})
+        if it.get("final_rule") == ev["rule"]:
+            ev["family_share"] = it.get("family_share")
+    except Exception:
+        pass
+    return ev
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_eval_index(key: str):
     hist, _, _ = load_data()
     d = hist[key][hist[key].index >= "2014-01-01"].rename(columns={"amount": "vol"}).dropna(subset=["open", "close"])
-    return stocks.evaluate(d, key)
+    return _with_meta(stocks.evaluate(d, key), key)
 
 
 VERDICT_COLOR = {"通过": GREEN, "通过（样本外）": GREEN, "通过（控回撤）": AMBER, "未通过": GRAY}
@@ -335,9 +348,12 @@ def signal_block(key: str, ev: dict, price: float, fmt: str = "{:.2f}"):
         nxt = (f'卖出：收盘升破布林上轨 {fmt.format(lv["boll_up"])}' if sg["holding"]
                else f'买入：前一日收盘跌破布林 -1.5σ（现 {fmt.format(lv["boll_lo"])}），次日收涨阳线确认')
     else:
-        stop_px = fmt.format(sg["last"][2] * 0.9) if sg["holding"] and sg["last"] else "—"
-        nxt = (f'卖出：RSI14 升破 60（现 {lv["rsi"]:.1f}），或收盘跌破止损价 {stop_px}' if sg["holding"]
-               else f'买入：近 5 日 RSI14 曾 &lt;30，且出现收涨阳线、RSI 回升（现 RSI {lv["rsi"]:.1f}）')
+        m = re.match(r"超卖 RSI<(\d+) 确认(\S+) / RSI>(\d+) 止损(\d+)%", rule)
+        lo, cf, hi, stp = (int(m[1]), m[2], int(m[3]), int(m[4])) if m else (30, "阳线", 60, 10)
+        stop_px = fmt.format(sg["last"][2] * (1 - stp / 100)) if sg["holding"] and sg["last"] and stp else None
+        cf_txt = {"阳线": "且出现收涨阳线、RSI 回升", "MACD柱": "且 MACD 柱回升", "无": ""}.get(cf, "")
+        nxt = (f'卖出：RSI14 升破 {hi}（现 {lv["rsi"]:.1f}）' + (f'，或收盘跌破止损价 {stop_px}' if stop_px else "")
+               if sg["holding"] else f'买入：近 5 日 RSI14 曾 &lt;{lo}{"，" + cf_txt if cf_txt else ""}（现 RSI {lv["rsi"]:.1f}）')
     s_, h_ = bt["stats"], ev["bh"]["stats"]
     perf = (f'夏普 {s_["sharpe"]:.2f}（持有 {h_["sharpe"]:.2f}）· 回撤 {s_["mdd"]:.0f}%（持有 {h_["mdd"]:.0f}%）· {bt["n_trades"]} 笔<br>'
             f'前/后半段夏普 {bt["first"]["sharpe"]:.2f} / {bt["second"]["sharpe"]:.2f} · 去掉最好 5% 交易后年化 {bt["ex_top"]["cagr"]:+.1f}%')
@@ -345,6 +361,9 @@ def signal_block(key: str, ev: dict, price: float, fmt: str = "{:.2f}"):
         o, ob = bt["oos"], ev["bh"]["oos"]
         perf = (f'<b>样本外（2021 起）</b>夏普 {o["sharpe"]:.2f}（持有 {ob["sharpe"]:.2f}）· 回撤 {o["mdd"]:.0f}%（持有 {ob["mdd"]:.0f}%）· {bt["oos_n"]} 笔<br>'
                 f'全样本夏普 {s_["sharpe"]:.2f}（持有 {h_["sharpe"]:.2f}）· 回撤 {s_["mdd"]:.0f}%（持有 {h_["mdd"]:.0f}%）')
+    fs = ev.get("family_share")
+    if rule != stocks.SIGNAL_RULE and fs is not None and fs < 0.3:
+        perf += f'<br><span style="color:{AMBER}">⚠ 同类规则只有 {fs * 100:.0f}% 样本外胜过持有，偏运气，谨慎使用</span>'
     vc = VERDICT_COLOR.get(vd, GRAY)
     label = "确认型买卖信号" + ("" if ok else "（未通过检验，仅供观察）")
     c1, c2 = st.columns([1, 1], gap="small")
@@ -352,7 +371,7 @@ def signal_block(key: str, ev: dict, price: float, fmt: str = "{:.2f}"):
                       f'{last}<br>{nxt}', acol, acol), unsafe_allow_html=True)
     c2.markdown(_card("回测检验", vd, perf, vc, vc), unsafe_allow_html=True)
     note = "盘中按实时价计算，收盘可能变" if in_session else f'按 {sg["date"]} 收盘'
-    how = ("这条规则只用 2014–2020 年数据，从约 190 条候选里按夏普选出，2021 年以后的数据没参与挑选，用来做样本外检验。"
+    how = ("这条规则只用 2014–2020 年数据，从约 200 条候选里按夏普选出，2021 年以后的数据没参与挑选，用来做样本外检验。"
            if rule != stocks.SIGNAL_RULE else
            "通用规则，所有标的同一套参数。检验标准：≥10 笔、前后两段夏普都为正、去掉最好 5% 交易仍赚钱，且夏普和回撤都不差于买入持有。")
     st.caption(f"规则：{rule}。收盘出信号，次日开盘执行，{note}。{how}")
@@ -410,13 +429,15 @@ def stock_quotes():
         x = q.get(c)
         if not x or x["last"] is None:
             continue
-        cards.append(_card(f'{x["name"]} {c}', f'{x["last"]:.2f}　{x["pct"]:+.2f}%',
-                           f'今开 {x["open"]:.2f} · 高 {x["high"]:.2f} · 低 {x["low"]:.2f}<br>'
-                           f'成交 {x["amount_yi"]:.2f} 亿 · 换手 {x["turnover"]:.2f}%<br>'
-                           f'市值 {x["mcap_yi"]:.0f} 亿 · PE {x["pe"]:.1f} · PB {x["pb"]:.2f}',
+        cur = x.get("currency", "元")
+        extra = (f'成交 {x["amount_yi"]:.2f} 亿{cur}' + (f' · 换手 {x["turnover"]:.2f}%' if x.get("turnover") else "") + "<br>"
+                 f'市值 {x["mcap_yi"]:.0f} 亿{cur} · PE {x["pe"]:.1f}' + (f' · PB {x["pb"]:.2f}' if x.get("pb") else ""))
+        cards.append(_card(f'{x["name"]} {stocks.display_code(c)}', f'{x["last"]:.2f}　{x["pct"]:+.2f}%',
+                           f'今开 {x["open"]:.2f} · 高 {x["high"]:.2f} · 低 {x["low"]:.2f}<br>{extra}',
                            _pc(x["pct"]), _pc(x["pct"])))
-    if cards:
-        _cards(cards)
+    for i in range(0, len(cards), 4):
+        row = cards[i:i + 4]
+        _cards(row + [""] * (4 - len(row)))
 
 
 def stock_detail(code: str, name: str):
@@ -467,7 +488,7 @@ def stock_detail(code: str, name: str):
     if ev:
         add_markers(fig, g, ev["now"])
     vc = [RED if c >= o else GREEN for c, o in zip(g["close"], g["open"])]
-    fig.add_trace(go.Bar(x=g.index, y=g["vol"], name="成交量(手)", marker_color=vc, showlegend=False), row=2, col=1)
+    fig.add_trace(go.Bar(x=g.index, y=g["vol"], name="成交量(股)", marker_color=vc, showlegend=False), row=2, col=1)
     fig.add_trace(go.Bar(x=g.index, y=g["macd"], name="MACD", marker_color=[RED if v >= 0 else GREEN for v in g["macd"]],
                          showlegend=False), row=3, col=1)
     fig.add_trace(go.Scatter(x=g.index, y=g["dif"], name="DIF", line=dict(color="#e2e8f0", width=1), showlegend=False), row=3, col=1)
@@ -487,7 +508,7 @@ def stock_page():
         names = {c: v["name"] for c, v in load_quotes(tuple(stocks.STOCKS)).items()}
     except Exception:
         names = {}
-    tabs = st.tabs([f'{names.get(c, c)} {c}' for c in stocks.STOCKS])
+    tabs = st.tabs([f'{names.get(c, c)} {stocks.display_code(c)}' for c in stocks.STOCKS])
     for tab, c in zip(tabs, stocks.STOCKS):
         with tab:
             stock_detail(c, names.get(c, c))
@@ -558,7 +579,9 @@ def report_page():
                      "样本外夏普（持有）": f'{_fmt(o.get("sharpe"))}（{_fmt(bo.get("sharpe"))}）',
                      "样本外回撤（持有）": f'{_fmt(o.get("mdd"), "{:.0f}%")}（{_fmt(bo.get("mdd"), "{:.0f}%")}）',
                      "全样本夏普（持有）": f'{_fmt(it["final_stats"]["sharpe"])}（{_fmt(it["bh_stats"]["sharpe"])}）',
-                     "样本外笔数": it["final_oos_n"]})
+                     "样本外笔数": it["final_oos_n"],
+                     "同类规则样本外胜过持有": (f'{it["family_share"] * 100:.0f}%（{it["family"]}）'
+                                         if it["final_rule"] != rep["generic_rule"] and "family_share" in it else "—")})
     st.markdown('<div class="hdr">📊 结论汇总</div>', unsafe_allow_html=True)
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
     st.caption("用通用规则的标的按全样本标准判定；样本外重选出来的规则按样本外标准判定。"
@@ -607,6 +630,9 @@ def report_page():
 - 只有一次样本内/样本外切分，样本外约 6 年；中证2000 的选中规则样本外只有 8 笔，统计上偏弱。
 - 每个标的看了约 200 条规则，即使第一名样本外通过，也可能有部分运气成分；邻近参数一致是主要的安慰。
 - 个股用前复权价，未计分红税、涨跌停买不进/卖不出、停牌。
+- 个股历史日线来自新浪前复权（存在 data/kline/），app 用腾讯补最近 120 根；换数据源时复权细节会有差别，结论可能变（士兰微就是例子）。
+- 港股每边成本按 15bp（含 0.1% 印花税），A股每边 10bp。
+- "同类规则样本外胜过持有"低于 30% 的，说明这一类规则在该标的上大多失效，选中的第一名偏运气，页面会标黄提示。
 - 规则会过时：建议每季度运行一次 `validate.py`，结论变成"未通过"就停用。
 """)
 
