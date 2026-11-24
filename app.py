@@ -376,6 +376,10 @@ def signal_block(key: str, ev: dict, price: float, fmt: str = "{:.2f}"):
     if rule != stocks.SIGNAL_RULE and fs is not None and fs < 0.3:
         perf += f'<br><span style="color:{AMBER}">⚠ 同类规则只有 {fs * 100:.0f}% 样本外胜过持有，偏运气，谨慎使用</span>'
     vc = VERDICT_COLOR.get(vd, GRAY)
+    if ok and key not in stocks.INDEX_KEYS:
+        vc = AMBER
+        perf += (f'<br><span style="color:{AMBER}">⚠ {stocks.WEAK_STOCK}：同类规则放到中证800 的 792 只股票上，'
+                 '样本外没有显著超额（见验证报告页），把它当参考，别当依据</span>')
     label = "确认型买卖信号" + ("" if ok else "（数据不足，不给信号）" if vd == stocks.NO_DATA else "（未通过检验，仅供观察）")
     if vd == stocks.NO_DATA:
         perf = f'上市以来只有 {len(bt["ret"]) + 60} 个交易日（验证至少需要约 2 年，且要有 2021 年前的数据挑规则），无法检验任何规则'
@@ -575,10 +579,9 @@ def advice_table():
         st.markdown('<div class="hdr">📌 持仓与观察 <span>持仓看卖点，观察股看入场；收盘出信号，次日开盘执行</span></div>',
                     unsafe_allow_html=True)
         st.dataframe(df, hide_index=True, use_container_width=True)
-        st.caption("持仓：中证2000ETF / 滨江 / 裕同用已验证规则；阿里巴巴 / MiniMax 没有能验证的规则，用风控线（"
-                   + stocks.RISK_RULE + "），只控制亏损、不预测涨跌。观察股：长飞 / 士兰微用已验证的买入规则，其余用"
-                   + stocks.ENTRY_RULE + "——2021 年后合计 113 次平均只比随机买入多 0.6 个百分点（t≈0.4），属弱证据，"
-                   "用分批来降低择时风险。")
+        st.caption("持仓：中证2000ETF 用指数规则（" + stocks.MA_RULE + "，证据弱）；滨江 / 裕同 / 阿里巴巴 / MiniMax 用风控线（"
+                   + stocks.RISK_RULE + "），只控制回撤、不预测涨跌。观察股：长飞 / 士兰微的规则只是单票通过，大样本未支持；其余用"
+                   + stocks.ENTRY_RULE + "——中证800 大样本里跌破 30 后没有超额，它的作用是分批、守纪律，不是抓买点。")
 
 
 def stock_page():
@@ -709,6 +712,8 @@ def report_page():
                 _scatter(g2, it["bh_oos"]["sharpe"], False, "第二轮候选（星号 = 样本内第一）", f"sc2_{k}")
                 st.dataframe(g2.head(10).round(2), hide_index=True, use_container_width=True, key=f"top2_{k}")
 
+    large_sample_section()
+
     st.markdown('<div class="hdr">⚠️ 局限</div>', unsafe_allow_html=True)
     st.markdown("""
 - 只有一次样本内/样本外切分，样本外约 6 年；中证2000 的选中规则样本外只有 8 笔，统计上偏弱。
@@ -719,6 +724,45 @@ def report_page():
 - "同类规则样本外胜过持有"低于 30% 的，说明这一类规则在该标的上大多失效，选中的第一名偏运气，页面会标黄提示。
 - 规则会过时：建议每季度运行一次 `validate.py`，结论变成"未通过"就停用。
 """)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_large_sample(_mtime: float):
+    with open(os.path.join(os.path.dirname(__file__), "data", "large_sample.pkl"), "rb") as f:
+        return pickle.load(f)
+
+
+def large_sample_section():
+    path = os.path.join(os.path.dirname(__file__), "data", "large_sample.pkl")
+    if not os.path.exists(path):
+        return
+    r = load_large_sample(os.path.getmtime(path))
+    st.markdown(f'<div class="hdr">🔬 大样本检验：中证800 <span>{r["n"]} 只 · 2014 至今 · 生成于 {r["computed_at"]} · '
+                'research/large_sample.py</span></div>', unsafe_allow_html=True)
+    st.markdown("""
+单只股票十几笔交易就能"通过"，运气成分很大。这里把同样的买卖信号放到中证800 的全部成分股上：
+
+- **入场信号**：信号日次日开盘买（开盘涨停视为买不到），持有 H 天的收益 − 同期全体等权收益 = 超额；
+  再减去"随便哪天买入"的平均超额（扣掉幸存者偏差带来的整体漂移）和 0.2% 成本 = **净超额**。
+- **出场信号**：卖出后 H 天的净超额，为负才说明卖得对。
+- **完整规则**：app 里三条规则逐笔交易收益 − 同期全体等权收益。
+- t 值按入场月份聚类；测了很多信号，**|t| ≥ 3** 才算显著。
+
+**结论：个股层面没有一个信号有显著正超额；"站上MA30+放量""上升趋势回踩MA60"持有 5 天时样本内外都显著为负。**
+所以个股的"通过"降级为"单票通过，大样本未支持"，持仓个股只用风控线控回撤。中证2000 的规则作用在指数上，这里不直接否定它，但它样本外笔数少，证据同样弱。
+""")
+    for key, title in (("entry", "入场信号（净超额 %，正 = 买得好）"), ("exit", "出场信号（净超额 %，负 = 卖得对）")):
+        E = pd.DataFrame([x for x in r[key] if x["区间"] != "逐年"])
+        E["区间"] = E["区间"].str[:3]
+        P = E.pivot_table(index=["信号", "持有天数"], columns="区间", values=["净超额", "t值", "事件数"]).round(2)
+        P.columns = [f"{b}·{a}" for a, b in P.columns]
+        P = P[[c for c in ("样本内·净超额", "样本内·t值", "样本内·事件数", "样本外·净超额", "样本外·t值", "样本外·事件数") if c in P]]
+        st.markdown(f"**{title}**")
+        st.dataframe(P.reset_index(), hide_index=True, use_container_width=True, key=f"ls_{key}")
+    st.markdown("**app 完整规则（逐笔，超额 = 交易收益 − 同期全体等权，%）**")
+    st.dataframe(pd.DataFrame(r["rules"]).round(2), hide_index=True, use_container_width=True, key="ls_rules")
+    st.caption("局限：用的是当前中证800 成分股，退市、调出的股票不在里面（幸存者偏差），真实表现只会更差；"
+               "后复权价；只检验了个股，不包括指数择时。")
 
 
 # ── 主页面 ──────────────────────────────────────────────────────

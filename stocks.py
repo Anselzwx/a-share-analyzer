@@ -430,6 +430,10 @@ def signal_now(d: pd.DataFrame, rule: str = SIGNAL_RULE) -> dict:
 HOLDINGS: List[str] = ["csi2000", "002244", "002831", "hk09988", "hk00100"]
 ENTRY_RULE = "RSI14 跌破 30 → 买一批（分 3 批建仓）"
 RISK_RULE = "收盘跌破 MA60，或较 60 日最高收盘回撤 ≥15%"
+INDEX_KEYS = ("csi2000", "sz50")
+# 中证800 大样本检验（research/large_sample.py，2026-11-24）：个股层面所有买卖规则都没有显著超额，
+# 所以个股"通过"只算单票通过，降级展示；持仓个股只用风控线控回撤
+WEAK_STOCK = "单票通过，大样本未支持"
 
 
 def risk_flags(d: pd.DataFrame) -> dict:
@@ -456,22 +460,22 @@ def advice(d: pd.DataFrame, key: str, verdict: str, rule: str) -> dict:
     tr = int(st_.iloc[-1] - st_.iloc[-2]) if st_ is not None and len(st_) > 1 else 0
     price = float(d["close"].iloc[-1])
     if key in HOLDINGS:
-        if validated:
+        if validated and key in INDEX_KEYS:
             hold = bool(st_.iloc[-1])
-            return dict(role="持仓", evidence=f"已验证规则（{verdict}）", side="卖出" if tr < 0 else None,
+            return dict(role="持仓", evidence=f"指数规则（{verdict}，样本外笔数少，证据弱）", side="卖出" if tr < 0 else None,
                         action="继续持有" if hold else ("卖出（今天触发）" if tr < 0 else "卖出（规则已转空仓）"),
                         detail=f"规则：{rule}")
         rf = risk_flags(d)
-        return dict(role="持仓", evidence="风控线（未经验证，不是预测）", side="卖出" if rf["new"] else None,
+        return dict(role="持仓", evidence="风控线：控制回撤的纪律，不是择时信号", side="卖出" if rf["new"] else None,
                     action=("触发风控：考虑卖出（今天触发）" if rf["new"] else "已在风控线下：考虑卖出") if rf["on"] else "继续持有",
                     detail=f'MA60 {rf["ma60"]:.2f} · 60 日最高收盘 {rf["hi60"]:.2f}（现回撤 {rf["dd"]:.1f}%）· 风控线 {rf["line"]:.2f}')
     # 观察股：有验证过的买入规则就用它；否则 RSI<30 分批
     if validated:
         hold = bool(st_.iloc[-1])
-        return dict(role="观察", evidence=f"已验证规则（{verdict}）", side="买入" if tr > 0 else None,
+        return dict(role="观察", evidence=(f"指数规则（{verdict}）" if key in INDEX_KEYS else f"{WEAK_STOCK}（{verdict}）"), side="买入" if tr > 0 else None,
                     action="买入（今天触发）" if tr > 0 else ("规则处于持有期（错过本次入场，等下次）" if hold else "等待买点"),
                     detail=f"规则：{rule}")
     ef = entry_flags(d)
-    return dict(role="观察", evidence="弱证据（样本外 8 只里 6 只短期为正，统计不显著）", side="买入" if ef["new"] else None,
+    return dict(role="观察", evidence="纪律分批，不是择时：中证800 大样本 RSI 跌破 30 后无超额", side="买入" if ef["new"] else None,
                 action="买一批（今天跌破 30）" if ef["new"] else ("超卖区内：可分批买" if ef["below"] else "等待（RSI 未到 30）"),
                 detail=f'RSI14 {ef["rsi"]:.1f}；{ENTRY_RULE}')
