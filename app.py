@@ -198,6 +198,8 @@ def index_page():
     f = a_share.indicators(hist)
     live_section(f)
 
+    st.markdown('<div class="hdr">📌 我的持仓：中证2000ETF</div>', unsafe_allow_html=True)
+    advice_card("csi2000")
     st.markdown('<div class="hdr">🎯 确认型买卖信号 <span>收盘出信号，次日开盘执行</span></div>', unsafe_allow_html=True)
     evs = {}
     for key, nm in (("csi2000", "中证2000"), ("sz50", "上证50")):
@@ -471,8 +473,10 @@ def stock_detail(code: str, name: str):
     except Exception as e:
         ev = None
         st.caption(f"信号计算失败：{e}")
+    st.markdown('<div class="hdr">📌 操作建议</div>', unsafe_allow_html=True)
+    advice_card(code)
     if ev:
-        st.markdown('<div class="hdr">🎯 买卖信号</div>', unsafe_allow_html=True)
+        st.markdown('<div class="hdr">🎯 规则信号与检验</div>', unsafe_allow_html=True)
         signal_block(code, ev, s["close"])
 
     rets = " · ".join(f'{k} {v:+.1f}%' for k, v in s["ret"].items() if v is not None)
@@ -514,8 +518,72 @@ def stock_detail(code: str, name: str):
         backtest_block(code, ev)
 
 
+def _validation_items():
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "data", "validation.pkl"), "rb") as f:
+            return pickle.load(f)["items"]
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_advice(key: str):
+    it = _validation_items().get(key, {})
+    if key in ("csi2000", "sz50"):
+        hist, _, _ = load_data()
+        d = hist[key].rename(columns={"amount": "vol"}).dropna(subset=["open", "close"])
+    else:
+        d = load_kline(key)
+    d = d[d.index >= "2014-01-01"]
+    a = stocks.advice(d, key, it.get("final_verdict", "未通过"), it.get("final_rule", stocks.SIGNAL_RULE))
+    a.update(name=it.get("name", key), price=float(d["close"].iloc[-1]), date=str(d.index[-1].date()))
+    return a
+
+
+def _adv_color(a):
+    act = a["action"]
+    if act.startswith("卖出") or "风控" in act:
+        return GREEN
+    if act.startswith("买") or "可分批" in act:
+        return RED
+    return "#e2e8f0"
+
+
+def advice_card(key: str):
+    try:
+        a = load_advice(key)
+    except Exception as e:
+        st.caption(f"操作建议计算失败：{e}")
+        return
+    col = _adv_color(a)
+    _cards([_card(f'{"📌 我的持仓" if a["role"] == "持仓" else "👀 观察·择时入场"} · 操作建议', a["action"],
+                  f'{a["detail"]}<br>依据：{a["evidence"]}', col, col)])
+
+
+def advice_table():
+    rows = []
+    for k in ["csi2000"] + stocks.STOCKS:
+        try:
+            a = load_advice(k)
+        except Exception:
+            continue
+        rows.append({"角色": a["role"], "标的": a["name"] + ("ETF" if k == "csi2000" else ""),
+                     "代码": "" if k == "csi2000" else stocks.display_code(k), "建议": a["action"],
+                     "依据": a["evidence"], "说明": a["detail"], "数据至": a["date"]})
+    if rows:
+        df = pd.DataFrame(rows).sort_values("角色", key=lambda s: s.map({"持仓": 0, "观察": 1}), kind="stable")
+        st.markdown('<div class="hdr">📌 持仓与观察 <span>持仓看卖点，观察股看入场；收盘出信号，次日开盘执行</span></div>',
+                    unsafe_allow_html=True)
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        st.caption("持仓：中证2000ETF / 滨江 / 裕同用已验证规则；阿里巴巴 / MiniMax 没有能验证的规则，用风控线（"
+                   + stocks.RISK_RULE + "），只控制亏损、不预测涨跌。观察股：长飞 / 士兰微用已验证的买入规则，其余用"
+                   + stocks.ENTRY_RULE + "——2021 年后合计 113 次平均只比随机买入多 0.6 个百分点（t≈0.4），属弱证据，"
+                   "用分批来降低择时风险。")
+
+
 def stock_page():
     stock_quotes()
+    advice_table()
     try:
         names = {c: v["name"] for c, v in load_quotes(tuple(stocks.STOCKS)).items()}
     except Exception:

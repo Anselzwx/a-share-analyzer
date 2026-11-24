@@ -415,3 +415,55 @@ def signal_now(d: pd.DataFrame, rule: str = SIGNAL_RULE) -> dict:
               "持有" if st.iloc[-1] else "空仓等待")
     return dict(action=action, holding=bool(st.iloc[-1]), rsi=float(r.iloc[-1]), last=last_ev,
                 buys=list(ev[ev > 0].index), sells=list(ev[ev < 0].index), date=str(d.index[-1].date()))
+
+
+# ── 持仓 / 观察：操作建议 ─────────────────────────────────────────
+# 持仓（用户 2026-11-24 告知）；中证2000 指 ETF（562660 等），信号按指数算
+HOLDINGS: List[str] = ["csi2000", "002244", "002831", "hk09988", "hk00100"]
+ENTRY_RULE = "RSI14 跌破 30 → 买一批（分 3 批建仓）"
+RISK_RULE = "收盘跌破 MA60，或较 60 日最高收盘回撤 ≥15%"
+
+
+def risk_flags(d: pd.DataFrame) -> dict:
+    c = d["close"]
+    ma60 = c.rolling(60, min_periods=20).mean()
+    hi60 = c.rolling(60, min_periods=5).max()
+    dd = c / hi60 - 1
+    on = (c < ma60) | (dd <= -0.15)
+    return dict(on=bool(on.iloc[-1]), new=bool(on.iloc[-1] and not on.iloc[-2]) if len(on) > 1 else False,
+                ma60=float(ma60.iloc[-1]), hi60=float(hi60.iloc[-1]), dd=float(dd.iloc[-1] * 100),
+                line=float(max(ma60.iloc[-1], hi60.iloc[-1] * 0.85)))
+
+
+def entry_flags(d: pd.DataFrame) -> dict:
+    r = _rsi(d["close"])
+    return dict(rsi=float(r.iloc[-1]), below=bool(r.iloc[-1] < 30),
+                new=bool(r.iloc[-1] < 30 and r.iloc[-2] >= 30) if len(r) > 1 else False)
+
+
+def advice(d: pd.DataFrame, key: str, verdict: str, rule: str) -> dict:
+    """返回 role / action / detail / evidence / side（今天新触发：买入/卖出/None）"""
+    validated = str(verdict).startswith("通过")
+    st_ = rule_series(d, rule) if validated else None
+    tr = int(st_.iloc[-1] - st_.iloc[-2]) if st_ is not None and len(st_) > 1 else 0
+    price = float(d["close"].iloc[-1])
+    if key in HOLDINGS:
+        if validated:
+            hold = bool(st_.iloc[-1])
+            return dict(role="持仓", evidence=f"已验证规则（{verdict}）", side="卖出" if tr < 0 else None,
+                        action="继续持有" if hold else ("卖出（今天触发）" if tr < 0 else "卖出（规则已转空仓）"),
+                        detail=f"规则：{rule}")
+        rf = risk_flags(d)
+        return dict(role="持仓", evidence="风控线（未经验证，不是预测）", side="卖出" if rf["new"] else None,
+                    action=("触发风控：考虑卖出（今天触发）" if rf["new"] else "已在风控线下：考虑卖出") if rf["on"] else "继续持有",
+                    detail=f'MA60 {rf["ma60"]:.2f} · 60 日最高收盘 {rf["hi60"]:.2f}（现回撤 {rf["dd"]:.1f}%）· 风控线 {rf["line"]:.2f}')
+    # 观察股：有验证过的买入规则就用它；否则 RSI<30 分批
+    if validated:
+        hold = bool(st_.iloc[-1])
+        return dict(role="观察", evidence=f"已验证规则（{verdict}）", side="买入" if tr > 0 else None,
+                    action="买入（今天触发）" if tr > 0 else ("规则处于持有期（错过本次入场，等下次）" if hold else "等待买点"),
+                    detail=f"规则：{rule}")
+    ef = entry_flags(d)
+    return dict(role="观察", evidence="弱证据（样本外 8 只里 6 只短期为正，统计不显著）", side="买入" if ef["new"] else None,
+                action="买一批（今天跌破 30）" if ef["new"] else ("超卖区内：可分批买" if ef["below"] else "等待（RSI 未到 30）"),
+                detail=f'RSI14 {ef["rsi"]:.1f}；{ENTRY_RULE}')
