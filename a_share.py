@@ -38,21 +38,22 @@ def _session() -> requests.Session:
     return s
 
 
-def _em(path: str, params: dict, host: str = "push2", tries: int = 2) -> dict:
+def _em(path: str, params: dict, host: str = "push2", tries: int = 2, timeout: float = 8) -> dict:
     """东财接口：https 经常被服务端直接断开，http 稳定 → 先 http 再 https，轮流重试"""
     import time
     err = None
     for i in range(tries):
         for scheme in ("http", "https"):
             try:
-                r = _session().get(f"{scheme}://{host}.eastmoney.com{path}", params=params, headers=_UA, timeout=8)
+                r = _session().get(f"{scheme}://{host}.eastmoney.com{path}", params=params, headers=_UA, timeout=timeout)
                 data = r.json().get("data")
                 if data:
                     return data
                 err = RuntimeError("东财返回空数据")
             except Exception as e:
                 err = e
-        time.sleep(1 + i)
+        if i < tries - 1:
+            time.sleep(1 + i)
     raise RuntimeError(f"东财 {path} 失败：{type(err).__name__}")
 
 
@@ -209,7 +210,8 @@ def _tencent(codes) -> Dict[str, dict]:
 
 
 def _em_quote(secid: str) -> dict:
-    r = _em("/api/qt/stock/get", dict(secid=secid, fields="f43,f44,f45,f46,f48,f60,f86"))
+    # 实时只试一轮、超时 4 秒：失败有 ETF 推算兜底，不值得让页面多等
+    r = _em("/api/qt/stock/get", dict(secid=secid, fields="f43,f44,f45,f46,f48,f60,f86"), tries=1, timeout=4)
     last, prev = r["f43"] / 100, r["f60"] / 100
     return dict(last=last, prev=prev, open=r["f46"] / 100, high=r["f44"] / 100, low=r["f45"] / 100,
                 pct=(last / prev - 1) * 100, amount=r["f48"] / 1e8, time=datetime.fromtimestamp(r["f86"]))

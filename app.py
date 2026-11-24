@@ -588,10 +588,11 @@ def stock_page():
         names = {c: v["name"] for c, v in load_quotes(tuple(stocks.STOCKS)).items()}
     except Exception:
         names = {}
-    tabs = st.tabs([f'{names.get(c, c)} {stocks.display_code(c)}' for c in stocks.STOCKS])
-    for tab, c in zip(tabs, stocks.STOCKS):
-        with tab:
-            stock_detail(c, names.get(c, c))
+    # 只渲染选中的一只（以前 12 只全部渲染，很慢）
+    labels = {c: f'{names.get(c, c)} {stocks.display_code(c)}' for c in stocks.STOCKS}
+    pick = st.segmented_control("选择标的", stocks.STOCKS, format_func=lambda c: labels[c], default=stocks.STOCKS[0],
+                                key="pick_stock", label_visibility="collapsed") or stocks.STOCKS[0]
+    stock_detail(pick, names.get(pick, pick))
 
 
 # ── 验证报告页 ──────────────────────────────────────────────────
@@ -722,10 +723,7 @@ def report_page():
 
 # ── 主页面 ──────────────────────────────────────────────────────
 st.markdown('<div style="font-size:1.5rem;font-weight:800;color:#f1f5f9">A股信号</div>', unsafe_allow_html=True)
-tab_idx, tab_stk, tab_rep = st.tabs(["📊 中证2000 × 上证50", "🏷 个股", "📋 验证报告"])
-with tab_idx:
-    index_page()
-with tab_stk:
-    stock_page()
-with tab_rep:
-    report_page()
+# 只运行当前页面（st.tabs 会把三页全部算一遍）
+PAGES = {"📊 中证2000 × 上证50": index_page, "🏷 个股": stock_page, "📋 验证报告": report_page}
+page = st.segmented_control("页面", list(PAGES), default="🏷 个股", key="page", label_visibility="collapsed") or "🏷 个股"
+PAGES[page]()
