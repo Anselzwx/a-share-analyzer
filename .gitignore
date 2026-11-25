@@ -9,3 +9,4 @@ __pycache__/
 !cache/capital_hot.csv
 !cache/capital_short.csv
 alert.log
+market.log

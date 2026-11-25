@@ -828,9 +828,119 @@ def chips_section():
     st.dataframe(P[[c for c in order if c in P]].reset_index(), hide_index=True, use_container_width=True, key="chips_tbl")
 
 
+# ── 大盘页 ──────────────────────────────────────────────────────
+MKT_INDEX = [("sh000300", "沪深300"), ("sh000016", "上证50"), ("sh000905", "中证500"), ("sh000852", "中证1000"),
+             ("sh000001", "上证指数"), ("sz399001", "深证成指"), ("sz399006", "创业板指"), ("sh000688", "科创50")]
+MKT_LINES = {"沪深300": "#60a5fa", "上证50": "#a78bfa", "中证500": "#f472b6", "中证1000": "#ffd740", "创业板指": "#34d399"}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_market_klines():
+    out = {}
+    for sym, nm in MKT_INDEX:
+        try:
+            j = requests.get(f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={sym},day,,,640,qfq",
+                             timeout=6).json()["data"][sym]
+            rows = [r[:6] for r in (j.get("qfqday") or j.get("day"))]
+            d = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "vol"])
+            d["date"] = pd.to_datetime(d["date"])
+            out[nm] = d.set_index("date").astype(float)
+        except Exception:
+            continue
+    return out
+
+
+def _trend(d: pd.DataFrame) -> dict:
+    c = d["close"]
+    ma60, ma250 = c.rolling(60).mean(), c.rolling(250).mean()
+    up60 = ma60.iloc[-1] > ma60.iloc[-21]
+    a60, a250 = c.iloc[-1] > ma60.iloc[-1], c.iloc[-1] > ma250.iloc[-1]
+    state = "上升趋势" if a60 and a250 and up60 else "下降趋势" if not a60 and not a250 and not up60 else "震荡"
+    hi = c.iloc[-250:].max()
+    return dict(close=c.iloc[-1], day=(c.iloc[-1] / c.iloc[-2] - 1) * 100, r20=(c.iloc[-1] / c.iloc[-21] - 1) * 100,
+                dd=(c.iloc[-1] / hi - 1) * 100, hi_date=c.iloc[-250:].idxmax().date(), ma60=ma60.iloc[-1], ma250=ma250.iloc[-1],
+                a60=a60, a250=a250, up60=up60, state=state, date=c.index[-1].date())
+
+
+def market_page():
+    K = load_market_klines()
+    if not K:
+        st.error("指数行情获取失败（腾讯接口），稍后刷新")
+        return
+    T = {nm: _trend(d) for nm, d in K.items() if len(d) > 260}
+    n_dn = sum(t["state"] == "下降趋势" for t in T.values())
+    n_up = sum(t["state"] == "上升趋势" for t in T.values())
+    overall = "下降趋势" if n_dn >= len(T) / 2 else "上升趋势" if n_up >= len(T) / 2 else "震荡 / 分化"
+    oc = GREEN if overall == "下降趋势" else RED if overall == "上升趋势" else AMBER
+    any_date = next(iter(T.values()))["date"]
+    st.markdown(f'<div class="hdr">🌐 大盘状态 <span>{any_date} · 趋势按腾讯日线实时计算，每 5 分钟更新；描述现状，不是预测</span></div>',
+                unsafe_allow_html=True)
+    M = None
+    path = os.path.join(os.path.dirname(__file__), "data", "market.pkl")
+    if os.path.exists(path):
+        M = load_research("market.pkl", os.path.getmtime(path))
+    cards = [_card("趋势（8 个指数）", overall, f"下降趋势 {n_dn} 个 · 上升趋势 {n_up} 个 · 震荡 {len(T) - n_dn - n_up} 个", oc, oc)]
+    if M and "沪深300" in M["pe"]:
+        v = M["pe"]["沪深300"]
+        vc = GREEN if v["pct"] < 30 else RED if v["pct"] > 70 else AMBER
+        cards.append(_card("估值：沪深300 滚动市盈率", f'{v["pe"]:.1f} 倍',
+                           f'近 10 年 {v["pct"]:.0f}% 分位（中位 {v["median"]:.1f}）· {v["date"]}', vc, vc))
+    if M and M.get("ebs"):
+        e = M["ebs"]
+        ec = RED if e["v"] > e["ma"] else GREEN
+        cards.append(_card("股债利差（沪深300 盈利收益率 − 10 年国债）", f'{e["v"]:.2f}%',
+                           f'均线 {e["ma"]:.2f}% · 近 10 年 {e["pct"]:.0f}% 分位 · 越高股票相对越便宜', ec, ec))
+    if M and M.get("hmm"):
+        h = M["hmm"]
+        hc = RED if h["position"] >= 1 else AMBER if h["position"] > 0 else GREEN
+        cards.append(_card("HMM 状态：沪深300", h["label"], f'自 {h["since"]} 起 · 数据至 {h["date"]} · 只用于控回撤，不产生超额', hc, hc))
+    _cards(cards)
+
+    rows = []
+    for nm, t in T.items():
+        rows.append({"指数": nm, "收盘": round(t["close"], 2), "今日": f'{t["day"]:+.2f}%', "近 20 日": f'{t["r20"]:+.1f}%',
+                     "距 1 年高点": f'{t["dd"]:.1f}%（{t["hi_date"]}）',
+                     "MA60": f'{"上方" if t["a60"] else "下方"} · {"向上" if t["up60"] else "向下"}',
+                     "MA250": "上方" if t["a250"] else "下方", "趋势": t["state"]})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.caption("趋势：收盘在 MA60 和 MA250 之上且 MA60 向上 = 上升趋势；都在下方且 MA60 向下 = 下降趋势；其余 = 震荡。"
+               "半数以上指数处于同一趋势才给整体结论。这是状态描述——大样本检验里均线类择时没有超额，它的用处是判断风险大小。")
+
+    fig = go.Figure()
+    for nm, col in MKT_LINES.items():
+        if nm in K:
+            c = K[nm]["close"].iloc[-250:]
+            fig.add_trace(go.Scatter(x=c.index, y=(c / c.iloc[0] - 1) * 100, name=nm, line=dict(color=col, width=2),
+                                     hovertemplate="%{y:+.1f}%"))
+    fig.update_layout(**_layout(height=360, title=dict(text="近一年涨跌（起点 = 0）", font=dict(size=13))))
+    _axes(fig)
+    fig.update_yaxes(ticksuffix="%", zeroline=True, zerolinecolor="#334155")
+    st.plotly_chart(fig, use_container_width=True)
+
+    if M and M["pe"]:
+        st.markdown(f'<div class="hdr">💰 估值 <span>乐咕乐股 · 本机每个交易日 17:35 更新 · 快照 {M["computed_at"]}</span></div>',
+                    unsafe_allow_html=True)
+        vrows = [{"指数": k, "滚动市盈率": round(v["pe"], 2), "近 10 年分位": f'{v["pct"]:.0f}%', "10 年中位": round(v["median"], 2),
+                  "10% 分位（偏便宜）": round(v["lo"], 2), "90% 分位（偏贵）": round(v["hi"], 2), "日期": v["date"]}
+                 for k, v in M["pe"].items()]
+        st.dataframe(pd.DataFrame(vrows), hide_index=True, use_container_width=True)
+        if "沪深300" in M["pe"]:
+            v = M["pe"]["沪深300"]
+            fig = go.Figure(go.Scatter(x=v["series"].index, y=v["series"].values, name="沪深300 滚动市盈率",
+                                       line=dict(color="#60a5fa", width=2)))
+            for y, lab in ((v["median"], "中位"), (v["lo"], "10% 分位"), (v["hi"], "90% 分位")):
+                fig.add_hline(y=y, line=dict(color="#64748b", width=1, dash="dot"), annotation_text=lab,
+                              annotation_font_color="#94a3b8")
+            fig.update_layout(**_layout(height=300, title=dict(text="沪深300 滚动市盈率（近 10 年）", font=dict(size=13))))
+            _axes(fig, weekends=False)
+            st.plotly_chart(fig, use_container_width=True)
+        st.caption("估值对未来 1–3 年的长期回报有一定参考，对几周到几个月的涨跌基本没有预测力。")
+    st.caption("这一页不含新闻和宏观事件（无法自动核实）；消息面请单独看。")
+
+
 # ── 主页面 ──────────────────────────────────────────────────────
 st.markdown('<div style="font-size:1.5rem;font-weight:800;color:#f1f5f9">A股信号</div>', unsafe_allow_html=True)
 # 只运行当前页面（st.tabs 会把三页全部算一遍）
-PAGES = {"📊 中证2000 × 上证50": index_page, "🏷 个股": stock_page, "📋 验证报告": report_page}
+PAGES = {"🌐 大盘": market_page, "📊 中证2000 × 上证50": index_page, "🏷 个股": stock_page, "📋 验证报告": report_page}
 page = st.segmented_control("页面", list(PAGES), default="🏷 个股", key="page", label_visibility="collapsed") or "🏷 个股"
 PAGES[page]()
