@@ -713,6 +713,8 @@ def report_page():
                 st.dataframe(g2.head(10).round(2), hide_index=True, use_container_width=True, key=f"top2_{k}")
 
     large_sample_section()
+    factor_section()
+    chips_section()
 
     st.markdown('<div class="hdr">⚠️ 局限</div>', unsafe_allow_html=True)
     st.markdown("""
@@ -763,6 +765,67 @@ def large_sample_section():
     st.dataframe(pd.DataFrame(r["rules"]).round(2), hide_index=True, use_container_width=True, key="ls_rules")
     st.caption("局限：用的是当前中证800 成分股，退市、调出的股票不在里面（幸存者偏差），真实表现只会更差；"
                "后复权价；只检验了个股，不包括指数择时。")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_research(name: str, _mtime: float):
+    with open(os.path.join(os.path.dirname(__file__), "data", name), "rb") as f:
+        return pickle.load(f)
+
+
+def _research(name: str):
+    path = os.path.join(os.path.dirname(__file__), "data", name)
+    return load_research(name, os.path.getmtime(path)) if os.path.exists(path) else None
+
+
+def factor_section():
+    r = _research("factors.pkl")
+    if r is None:
+        return
+    st.markdown(f'<div class="hdr">🧮 截面因子选股：中证800 <span>月度调仓 · 生成于 {r["computed_at"]} · research/factors.py</span></div>',
+                unsafe_allow_html=True)
+    st.markdown("""
+每月最后一个交易日收盘按因子给所有股票打分，次日开盘买入因子最好的 1/5（开盘涨停不买），持有到下次调仓。
+**Q5 净超额** = 这 1/5 相对全体等权的月均超额 − 换手成本（单边 0.15%）。RankIC = 因子排名与下月收益排名的相关系数。
+对照组只用调仓日**已经在指数里**的股票（按新浪纳入日期），去掉"后来涨上来才进指数"的偏差；被调出的股票仍然缺失。
+
+**结论：只有"小市值"样本外显著（对照组 +1.2%/月，t=3.8），但不可信——**
+1. 样本内 2014–2020 不显著，只在 2021 年后有效；
+2. 与没有幸存者偏差的指数对不上：2026 年中证2000 −23.7%、上证50 −8.9%，样本里的小市值组却每月还跑赢 0.75%；
+3. 被调出中证800 的多半是跌下去的小票，它们不在样本里，小市值组被系统性抬高。
+
+其余因子（动量、反转、低波动、MAX、52 周高点、成交额、Amihud、换手）都不显著；动量样本内最好、样本外反向。
+""")
+    cols = ["因子", "区间", "期数", "RankIC", "IC_t", "Q5净超额", "Q5净_t", "Q5换手", "多空", "多空_t", "单调"]
+    for key, title in (("pit_summary", "对照组：只用当时已在指数里的股票（更可信）"), ("summary", "全部当前成分股")):
+        if key in r:
+            st.markdown(f"**{title}**（超额单位 %/月；单调 = Q1→Q5 月均超额）")
+            st.dataframe(r[key][cols].round(3), hide_index=True, use_container_width=True, key=f"fac_{key}")
+    if "pit_yearly" in r:
+        st.markdown("**逐年 Q5 净超额（对照组，%/月）**")
+        st.dataframe(r["pit_yearly"].rename(columns=str).reset_index(), hide_index=True, use_container_width=True, key="fac_year")
+
+
+def chips_section():
+    r = _research("chips.pkl")
+    if r is None:
+        return
+    st.markdown(f'<div class="hdr">🧱 筹码分布（获利盘比例） <span>生成于 {r["computed_at"]} · research/chips.py</span></div>',
+                unsafe_allow_html=True)
+    st.markdown("""
+用换手率推算每只股票每天的筹码分布（与同花顺/通达信同类的换手衰减法），核对东山精密：平均成本 89.49（同花顺 89.76），筹码峰 ≈72（同花顺 ≈70）。
+事先定好 4 个信号，方法同上面的事件研究（次日开盘买，扣任意日超额和 0.2% 成本，按月聚类 t，|t| ≥ 3），同一只股票两次信号至少隔 20 天。
+
+**结论：没有择时价值。** 样本外 4 个信号全部接近 0；样本内多个显著为负——
+"获利盘 <5% 且在筹码峰附近"（套牢盘割完、峰位支撑）持有 60 天 −2.6%（t −4.0）。低位密集筹码更像等解套的卖盘，而不是支撑。
+获利盘在价格贴近筹码峰时极不稳定（价格动 1 元，获利盘可以从 3% 变到 30%）。
+""")
+    E = pd.DataFrame([x for x in r["entry"] if x["区间"] != "逐年"])
+    E["区间"] = E["区间"].str[:3]
+    P = E.pivot_table(index=["信号", "持有天数"], columns="区间", values=["净超额", "t值", "事件数", "胜率"]).round(2)
+    P.columns = [f"{b}·{a}" for a, b in P.columns]
+    order = [f"{p}·{m}" for p in ("样本内", "样本外") for m in ("净超额", "t值", "胜率", "事件数")]
+    st.dataframe(P[[c for c in order if c in P]].reset_index(), hide_index=True, use_container_width=True, key="chips_tbl")
 
 
 # ── 主页面 ──────────────────────────────────────────────────────
