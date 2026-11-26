@@ -434,28 +434,28 @@ def load_quotes(codes: tuple):
 
 
 @st.fragment(run_every=60)
-def stock_quotes():
+def detail_header(code: str):
     try:
-        q = load_quotes(tuple(stocks.STOCKS))
+        x = load_quotes(tuple(stocks.STOCKS)).get(code)
+    except Exception:
+        x = None
+    try:
+        a = load_advice(code)
     except Exception as e:
-        st.caption(f"实时报价失败：{e}")
-        return
-    st.markdown(f'<div class="hdr">💹 实时报价 <span>{a_share._cn_session()} · 每 60 秒自动刷新</span></div>',
-                unsafe_allow_html=True)
-    cards = []
-    for c in stocks.STOCKS:
-        x = q.get(c)
-        if not x or x["last"] is None:
-            continue
+        a = None
+        st.caption(f"操作建议计算失败：{e}")
+    c1, c2 = st.columns([1, 1.6], gap="small")
+    if x and x.get("last") is not None:
         cur = x.get("currency", "元")
-        extra = (f'成交 {x["amount_yi"]:.2f} 亿{cur}' + (f' · 换手 {x["turnover"]:.2f}%' if x.get("turnover") else "") + "<br>"
-                 f'市值 {x["mcap_yi"]:.0f} 亿{cur} · PE {x["pe"]:.1f}' + (f' · PB {x["pb"]:.2f}' if x.get("pb") else ""))
-        cards.append(_card(f'{x["name"]} {stocks.display_code(c)}', f'{x["last"]:.2f}　{x["pct"]:+.2f}%',
-                           f'今开 {x["open"]:.2f} · 高 {x["high"]:.2f} · 低 {x["low"]:.2f}<br>{extra}',
-                           _pc(x["pct"]), _pc(x["pct"])))
-    for i in range(0, len(cards), 4):
-        row = cards[i:i + 4]
-        _cards(row + [""] * (4 - len(row)))
+        sub = (f'今开 {x["open"]:.2f} · 高 {x["high"]:.2f} · 低 {x["low"]:.2f}<br>成交 {x["amount_yi"]:.2f} 亿{cur}'
+               + (f' · 换手 {x["turnover"]:.2f}%' if x.get("turnover") else "")
+               + f'<br>市值 {x["mcap_yi"]:.0f} 亿{cur} · PE {x["pe"]:.1f}' + (f' · PB {x["pb"]:.2f}' if x.get("pb") else ""))
+        c1.markdown(_card(f'{x["name"]} {stocks.display_code(code)} · {a_share._cn_session()}',
+                          f'{x["last"]:.2f}　{x["pct"]:+.2f}%', sub, _pc(x["pct"]), _pc(x["pct"])), unsafe_allow_html=True)
+    if a:
+        col = _adv_color(a)
+        c2.markdown(_card(f'{"📌 我的持仓" if a["role"] == "持仓" else "👀 观察·择时入场"} · 操作建议', a["action"],
+                          f'{a["detail"]}<br>依据：{a["evidence"]}', col, col), unsafe_allow_html=True)
 
 
 def stock_detail(code: str, name: str):
@@ -477,14 +477,28 @@ def stock_detail(code: str, name: str):
     except Exception as e:
         ev = None
         st.caption(f"信号计算失败：{e}")
-    st.markdown('<div class="hdr">📌 操作建议</div>', unsafe_allow_html=True)
-    advice_card(code)
-    if ev:
-        st.markdown('<div class="hdr">🎯 规则信号与检验</div>', unsafe_allow_html=True)
-        signal_block(code, ev, s["close"])
+    detail_header(code)
+    t1, t2, t3 = st.tabs(["📈 走势与指标", "🧱 筹码分布", "🧪 规则回测"])
+    with t3:
+        if ev:
+            try:
+                ev_used = load_advice(code)["evidence"].startswith(("单票通过", "指数规则"))
+            except Exception:
+                ev_used = True
+            if not ev_used:
+                st.info("上面的操作建议没有用这条规则（持仓股用风控线，观察股用 RSI 分批纪律），下面只是回测参考。")
+            signal_block(code, ev, s["close"])
+            backtest_block(code, ev)
+        else:
+            st.caption("没有回测结果。")
+    with t2:
+        chip_block(code, d)
+    with t1:
+        _stock_chart(code, name, d, s, ev, above, trend, rsi_txt, macd_txt, ma)
 
+
+def _stock_chart(code, name, d, s, ev, above, trend, rsi_txt, macd_txt, ma):
     rets = " · ".join(f'{k} {v:+.1f}%' for k, v in s["ret"].items() if v is not None)
-    st.markdown('<div class="hdr">🔎 技术指标</div>', unsafe_allow_html=True)
     _cards([
         _card("均线", trend, f'站上 {"/".join(f"MA{n}" for n in above) or "无"}<br>'
               f'MA20 {ma[20]:.2f}（{(s["close"] / ma[20] - 1) * 100:+.1f}%）· MA60 {ma[60]:.2f}（{(s["close"] / ma[60] - 1) * 100:+.1f}%）',
@@ -494,7 +508,7 @@ def stock_detail(code: str, name: str):
         _card("量比（vs 前5日）", f'{s["vol_ratio"]:.2f}', "放量" if s["vol_ratio"] >= 1.5 else "缩量" if s["vol_ratio"] <= 0.7 else "平量"),
         _card("波动 / 位置", f'{s["vol20"]:.0f}%', f'20 日年化波动<br>距 1 年高点 {s["dd"]:.1f}%（{s["lo250"]:.2f}–{s["hi250"]:.2f}）'),
     ])
-    st.caption(f"区间涨跌：{rets}（按 {s['date']} 收盘，前复权）。这一排是指标描述，买卖以上面的信号为准。")
+    st.caption(f"区间涨跌：{rets}（按 {s['date']} 收盘，前复权）。这一排是指标描述，买卖以上方操作建议为准。")
 
     win = st.radio("区间", ["3个月", "6个月", "1年", "2年"], index=1, horizontal=True,
                    label_visibility="collapsed", key=f"win_{code}")
@@ -518,8 +532,65 @@ def stock_detail(code: str, name: str):
     _axes(fig)
     st.plotly_chart(fig, use_container_width=True, key=f"k_{code}")
 
-    if ev:
-        backtest_block(code, ev)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_chips(code: str, _d: pd.DataFrame, last: str):
+    return stocks.chips(_d, code)
+
+
+def chip_block(code: str, d: pd.DataFrame):
+    if stocks.is_hk(code):
+        st.caption("港股没有可靠的逐日流通股本数据，暂不计算筹码分布。")
+        return
+    try:
+        r = load_chips(code, d, f"{d.index[-1]}{d['close'].iloc[-1]}")
+    except Exception as e:
+        st.caption(f"筹码计算失败：{e}")
+        return
+    if not r:
+        st.caption("缺少流通股本数据，暂不计算（本地运行 alert.py / validate.py 刷新缓存后会生成）。")
+        return
+    g, w, p, dl = r["grid"], r["dist"] * 100, r["close"], r["daily"]
+    x = dl.iloc[-1]
+    up = lambda a, b: w[(g > a) & (g <= b)].sum()
+    conc = lambda lo_hi: (lo_hi[1] - lo_hi[0]) / (lo_hi[1] + lo_hi[0]) * 100
+    _cards([
+        _card("获利盘", f'{x["profit"]:.1f}%', f'成本 ≤ 现价 {p:.2f} 的筹码占比<br>5 日前 {dl["profit"].iloc[-6]:.1f}%',
+              RED if x["profit"] >= 50 else GREEN if x["profit"] <= 10 else "#e2e8f0"),
+        _card("平均成本", f'{x["avg"]:.2f}', f'现价相对 {(p / x["avg"] - 1) * 100:+.1f}%<br>筹码峰 {x["peak"]:.2f}'),
+        _card("90% 筹码区间", f'{r["r90"][0]:.2f}–{r["r90"][1]:.2f}', f'集中度 {conc(r["r90"]):.1f}%<br>'
+              f'70% 区间 {r["r70"][0]:.2f}–{r["r70"][1]:.2f}（{conc(r["r70"]):.1f}%）'),
+        _card("上方套牢盘", f'{up(p, p * 1.1):.1f}%', f'现价到 +10% 之间<br>+10%~+30% {up(p * 1.1, p * 1.3):.1f}% · +30% 以上 {up(p * 1.3, 1e12):.1f}%'),
+        _card("近 20 日换手", f'{dl["turn"].iloc[-20:].sum():.0f}%', f'近 60 日 {dl["turn"].iloc[-60:].sum():.0f}%<br>（流通盘累计换手）'),
+    ])
+    c1, c2 = st.columns([1, 1.4])
+    # 显示用等宽价格格子（现价 0.6–1.8 倍），范围外的筹码在标题里注明
+    lo, hi = max(g[w > 1e-4].min(), p * 0.6), min(g[w > 1e-4].max(), p * 1.8)
+    edges = np.linspace(lo, hi, 71)
+    hb, _ = np.histogram(g, edges, weights=w)
+    mid = (edges[:-1] + edges[1:]) / 2
+    out_lo, out_hi = w[g < lo].sum(), w[g > hi].sum()
+    fig = go.Figure(go.Bar(x=hb, y=mid, orientation="h", width=(edges[1] - edges[0]) * 0.9,
+                           marker_color=[RED if v <= p else "#3b82f6" for v in mid],
+                           hovertemplate="价位 %{y:.2f}<br>筹码 %{x:.2f}%<extra></extra>"))
+    fig.add_hline(y=p, line=dict(color="#e2e8f0", width=1), annotation_text=f"现价 {p:.2f}", annotation_position="bottom right")
+    fig.add_hline(y=x["avg"], line=dict(color="#94a3b8", width=1, dash="dash"), annotation_text=f'平均成本 {x["avg"]:.2f}',
+                  annotation_position="top right")
+    extra = " · ".join(t for t in (f"{hi:.0f} 以上 {out_hi:.1f}%" if out_hi >= 0.1 else "",
+                                   f"{lo:.0f} 以下 {out_lo:.1f}%" if out_lo >= 0.1 else "") if t)
+    fig.update_layout(**_layout(height=420, title=f"筹码分布 {r['date']}（红 = 获利，蓝 = 套牢）" + (f"<br><sup>图外：{extra}</sup>" if extra else "")))
+    fig.update_layout(bargap=0, showlegend=False, xaxis_title="筹码占比 %", yaxis_title="前复权价")
+    c1.plotly_chart(fig, use_container_width=True, key=f"chip_{code}")
+    h = dl.iloc[-120:]
+    f2 = make_subplots(specs=[[{"secondary_y": False}]])
+    f2.add_trace(go.Scatter(x=h.index, y=h["profit"], name="获利盘 %", line=dict(color=C2000, width=1.4)))
+    f2.update_layout(**_layout(height=420, title="获利盘比例（近 120 个交易日）"))
+    f2.update_yaxes(range=[0, 100], ticksuffix="%")
+    _axes(f2)
+    c2.plotly_chart(f2, use_container_width=True, key=f"chipp_{code}")
+    st.caption("按换手率衰减法估算（与同花顺/通达信 CYQ 同类，东山精密核对平均成本误差 < 0.5%），流通股本按新浪数据，盘中用实时成交量。"
+               "**只作参考**：中证800 大样本里，“获利盘低且价格在筹码峰附近”样本内持有 60 天反而跑输 2.6%（t −4.0），"
+               "“获利盘从 <5% 回升到 >20%”样本外无超额（见验证报告页）。价格贴近筹码峰时获利盘会剧烈跳动，不宜单独解读。")
 
 
 def _validation_items():
@@ -564,35 +635,49 @@ def advice_card(key: str):
                   f'{a["detail"]}<br>依据：{a["evidence"]}', col, col)])
 
 
-def advice_table():
+@st.fragment(run_every=60)
+def overview_table():
+    """总览：一行一只，现价 + 建议；点下面的按钮看单只详情"""
+    try:
+        q = load_quotes(tuple(stocks.STOCKS))
+    except Exception:
+        q = {}
     rows = []
     for k in ["csi2000"] + stocks.STOCKS:
         try:
             a = load_advice(k)
         except Exception:
             continue
+        x = q.get(k, {})
         rows.append({"角色": a["role"], "标的": a["name"] + ("ETF" if k == "csi2000" else ""),
-                     "代码": "" if k == "csi2000" else stocks.display_code(k), "建议": a["action"],
-                     "依据": a["evidence"], "说明": a["detail"], "数据至": a["date"]})
-    if rows:
-        df = pd.DataFrame(rows).sort_values("角色", key=lambda s: s.map({"持仓": 0, "观察": 1}), kind="stable")
-        st.markdown('<div class="hdr">📌 持仓与观察 <span>持仓看卖点，观察股看入场；收盘出信号，次日开盘执行</span></div>',
-                    unsafe_allow_html=True)
-        st.dataframe(df, hide_index=True, use_container_width=True)
+                     "代码": "" if k == "csi2000" else stocks.display_code(k),
+                     "现价": x.get("last"), "涨跌%": x.get("pct"), "建议": a["action"], "依据": a["evidence"].split("：")[0]})
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+    num = lambda v, f: f.format(v) if isinstance(v, (int, float)) and v == v else "—"
+    df["现价"] = df["现价"].map(lambda v: num(v, "{:.2f}"))
+    df["涨跌%"] = df["涨跌%"].map(lambda v: num(v, "{:+.2f}"))
+    df = df.sort_values("角色", key=lambda s: s.map({"持仓": 0, "观察": 1}), kind="stable")
+    st.markdown(f'<div class="hdr">📌 持仓与观察 <span>{a_share._cn_session()} · 报价每 60 秒刷新 · 收盘出信号，次日开盘执行</span></div>',
+                unsafe_allow_html=True)
+    sty = (df.style.map(lambda v: f"color:{_pc(float(v))}" if v != "—" else "", subset=["涨跌%"])
+           .map(lambda v: f"color:{_adv_color({'action': v})}", subset=["建议"]))
+    st.dataframe(sty, hide_index=True, use_container_width=True, height=36 * len(df) + 40)
+    with st.expander("这些建议怎么来的"):
         st.caption("持仓：中证2000ETF 用指数规则（" + stocks.MA_RULE + "，证据弱）；滨江 / 裕同 / 阿里巴巴 / MiniMax 用风控线（"
                    + stocks.RISK_RULE + "），只控制回撤、不预测涨跌。观察股：长飞 / 士兰微的规则只是单票通过，大样本未支持；其余用"
                    + stocks.ENTRY_RULE + "——中证800 大样本里跌破 30 后没有超额，它的作用是分批、守纪律，不是抓买点。")
 
 
 def stock_page():
-    stock_quotes()
-    advice_table()
+    overview_table()
     try:
         names = {c: v["name"] for c, v in load_quotes(tuple(stocks.STOCKS)).items()}
     except Exception:
         names = {}
-    # 只渲染选中的一只（以前 12 只全部渲染，很慢）
     labels = {c: f'{names.get(c, c)} {stocks.display_code(c)}' for c in stocks.STOCKS}
+    st.markdown('<div class="hdr">🔍 单只详情</div>', unsafe_allow_html=True)
     pick = st.segmented_control("选择标的", stocks.STOCKS, format_func=lambda c: labels[c], default=stocks.STOCKS[0],
                                 key="pick_stock", label_visibility="collapsed") or stocks.STOCKS[0]
     stock_detail(pick, names.get(pick, pick))

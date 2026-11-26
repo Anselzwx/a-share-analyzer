@@ -96,9 +96,70 @@ def fetch_history_sina(code: str) -> pd.DataFrame:
         d = ak.stock_hk_daily(symbol=code[2:], adjust="qfq")
     else:
         d = ak.stock_zh_a_daily(symbol=_sym(code), start_date="20100101", end_date="20991231", adjust="qfq")
+        _save_float(code, d)
     d = d.rename(columns={"volume": "vol"})
     d["date"] = pd.to_datetime(d["date"])
     return d.set_index("date")[["open", "close", "high", "low", "vol"]].astype(float).sort_index()
+
+
+FLOAT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "float_shares.json")
+
+
+def _save_float(code: str, d: pd.DataFrame):
+    """流通股本只存变动点（筹码分布要用换手率 = 成交量 / 流通股本）"""
+    if "outstanding_share" not in d:
+        return
+    s = d.set_index(pd.to_datetime(d["date"]))["outstanding_share"].astype(float).dropna()
+    s = s[s.diff().fillna(1) != 0]
+    try:
+        allf = json.load(open(FLOAT_PATH))
+    except Exception:
+        allf = {}
+    allf[code] = [[str(k.date()), float(v)] for k, v in s.items()]
+    with open(FLOAT_PATH, "w") as f:
+        json.dump(allf, f)
+
+
+def float_shares(code: str, index: pd.DatetimeIndex):
+    try:
+        x = json.load(open(FLOAT_PATH)).get(code)
+    except Exception:
+        return None
+    if not x:
+        return None
+    s = pd.Series([v for _, v in x], index=pd.to_datetime([k for k, _ in x]))
+    return s.reindex(s.index.union(index)).ffill().bfill().reindex(index)
+
+
+def chips(d: pd.DataFrame, code: str, nb: int = 400):
+    """筹码分布（换手衰减法，与同花顺/通达信 CYQ 同类）：每天旧筹码 × (1 − 换手)，当天成交按 [低, 高] 三角分布加入。
+    返回 (最后一天的 价格网格, 筹码占比) 和每日 获利盘/平均成本/筹码峰；港股或缺流通股本时返回 None"""
+    fs = None if is_hk(code) else float_shares(code, d.index)
+    if fs is None:
+        return None
+    h, l, c = d["high"].values, d["low"].values, d["close"].values
+    t = (d["vol"] / fs).fillna(0).clip(0, 1).values
+    grid = np.exp(np.linspace(np.log(l.min() * 0.95), np.log(h.max() * 1.05), nb))
+    dist = None
+    prof, avg, peak = (np.full(len(d), np.nan) for _ in range(3))
+    for i in range(len(d)):
+        lo, hi = l[i], h[i]
+        m = (lo + hi + c[i]) / 3
+        w = np.where(grid < m, (grid - lo) / max(m - lo, 1e-9), (hi - grid) / max(hi - m, 1e-9))
+        w = np.where((grid >= lo) & (grid <= hi), np.clip(w, 0, None), 0)
+        if w.sum() == 0:
+            w = np.zeros(nb)
+            w[np.argmin(np.abs(grid - c[i]))] = 1
+        w = w / w.sum()
+        dist = w if dist is None else dist * (1 - t[i]) + w * t[i]
+        s = dist.sum()
+        prof[i], avg[i], peak[i] = dist[grid <= c[i]].sum() / s, (dist * grid).sum() / s, grid[np.argmax(dist)]
+    dist = dist / dist.sum()
+    cdf = np.cumsum(dist)
+    q = lambda x: float(grid[min(np.searchsorted(cdf, x), nb - 1)])
+    return dict(grid=grid, dist=dist, close=float(c[-1]), date=str(d.index[-1].date()),
+                daily=pd.DataFrame({"profit": prof * 100, "avg": avg, "peak": peak, "turn": t * 100}, index=d.index),
+                r90=(q(0.05), q(0.95)), r70=(q(0.15), q(0.85)))
 
 
 def refresh_cache(code: str) -> pd.DataFrame:
