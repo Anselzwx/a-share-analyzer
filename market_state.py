@@ -1,7 +1,7 @@
 """大盘估值 + HMM 状态快照 → data/market.pkl（app "大盘"页读取；趋势部分 app 自己实时取）
 
 估值数据来自乐咕乐股（akshare），云端没装 akshare，所以在本机算好、提交到仓库。
-用法：python market_state.py [--push]    （cron 每个交易日 17:35 跑一次并推送）
+用法：python market_state.py [--push]    （cron：交易日 17:35 + 周二至周六 09:05 补跑/补推；锁屏时推送会失败，下次补推）
 """
 import os
 import pickle
@@ -65,12 +65,20 @@ def main():
         pickle.dump(res, f)
     print("已保存", OUT, {k: round(v["pe"], 2) for k, v in pe.items()}, ebs and round(ebs["v"], 2), res["hmm"])
     if "--push" in sys.argv:
-        git = ["git", "-C", HERE]
-        if subprocess.run(git + ["diff", "--quiet", "--", "data/market.pkl"]).returncode != 0:
-            subprocess.run(git + ["add", "data/market.pkl"], check=True)
-            subprocess.run(git + ["commit", "-qm", f"大盘估值快照 {res['computed_at'][:10]}"], check=True)
-            subprocess.run(git + ["push", "-q"], check=True)
-            print("已推送")
+        push(res["computed_at"][:10])
+
+
+def push(day: str):
+    """有变化就提交；只要本地领先远端（含之前锁屏时推送失败留下的提交）就推送"""
+    git = ["git", "-C", HERE]
+    if subprocess.run(git + ["diff", "--quiet", "--", "data/market.pkl"]).returncode != 0:
+        subprocess.run(git + ["add", "data/market.pkl"], check=True)
+        subprocess.run(git + ["commit", "-qm", f"大盘估值快照 {day}"], check=True)
+    subprocess.run(git + ["fetch", "-q"])
+    ahead = subprocess.run(git + ["rev-list", "--count", "@{u}..HEAD"], capture_output=True, text=True).stdout.strip()
+    if ahead and ahead != "0":
+        r = subprocess.run(git + ["push", "-q"], capture_output=True, text=True)
+        print("已推送" if r.returncode == 0 else f"推送失败（{r.stderr.strip()[:80]}），下次运行会补推")
 
 
 if __name__ == "__main__":
